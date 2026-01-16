@@ -1,0 +1,4 @@
+(executable
+ (name main)
+ (public_name imapd)
+ (libraries imap_server imap_storage imap_auth eio_main mirage-crypto-rng.unix cmdliner))

@@ -1,0 +1,3 @@
+(library
+ (name imap_types)
+ (public_name imapd.types))

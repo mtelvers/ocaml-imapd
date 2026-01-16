@@ -1,0 +1,29 @@
+
+** Conflict (reduce/reduce) in state 310.
+** Tokens involved: EOF CRLF
+** The following explanations concentrate on token EOF.
+** This state is reached from command after reading:
+
+tag SP LIST SP astring SP QUOTED_STRING
+
+** The derivations that appear below have the following common factor:
+** (The question mark symbol (?) represents the spot where the derivations begin to differ.)
+
+command 
+tag SP command_body EOF // lookahead token appears
+       command_auth // lookahead token is inherited
+       LIST SP astring SP list_mailbox // lookahead token is inherited
+                          (?)
+
+** In state 310, looking ahead at EOF, reducing production
+** astring -> QUOTED_STRING
+** is permitted because of the following sub-derivation:
+
+astring // lookahead token is inherited
+QUOTED_STRING . 
+
+** In state 310, looking ahead at EOF, reducing production
+** list_mailbox -> QUOTED_STRING
+** is permitted because of the following sub-derivation:
+
+QUOTED_STRING . 

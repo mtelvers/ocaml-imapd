@@ -1,0 +1,8 @@
+(library
+ (name imap_auth)
+ (public_name imapd.auth)
+ (foreign_stubs
+  (language c)
+  (names pam_stubs)
+  (flags (:standard)))
+ (c_library_flags (-lpam)))

@@ -1,0 +1,9 @@
+(library
+ (name imap_parser)
+ (public_name imapd.parser)
+ (libraries imap_types faraday))
+
+(ocamllex imap_lexer)
+
+(menhir
+ (modules imap_grammar))
