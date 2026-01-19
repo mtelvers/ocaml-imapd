@@ -395,6 +395,7 @@ module Make
                Some (Fetch_item_body_section { section = Some Section_text; origin = None; data = msg.raw_body })
              | Fetch_body_section (s, _) | Fetch_body_peek (s, _) ->
                (* Handle section specifiers *)
+               Eio.traceln "IMAP section spec: %S" s;
                (match parse_header_fields_section s with
                 | Some field_names ->
                   (* HEADER.FIELDS (...) - filter to requested headers *)
