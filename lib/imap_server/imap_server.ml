@@ -299,8 +299,28 @@ module Make
              | Fetch_rfc822_size -> Some (Fetch_item_rfc822_size msg.size)
              | Fetch_internaldate -> Some (Fetch_item_internaldate msg.internal_date)
              | Fetch_envelope -> Option.map (fun e -> Fetch_item_envelope e) msg.envelope
-             | Fetch_body -> Option.map (fun b -> Fetch_item_body b) msg.body_structure
-             | Fetch_bodystructure -> Option.map (fun b -> Fetch_item_bodystructure b) msg.body_structure
+             | Fetch_body ->
+               (* Return body structure - use actual if available, otherwise default *)
+               let body = match msg.body_structure with
+                 | Some b -> b
+                 | None ->
+                   let fields = { params = []; content_id = None; description = None;
+                                  encoding = "7BIT"; size = msg.size } in
+                   { body_type = Text { subtype = "PLAIN"; fields; lines = 0L };
+                     disposition = None; language = None; location = None }
+               in
+               Some (Fetch_item_body body)
+             | Fetch_bodystructure ->
+               (* Return body structure - use actual if available, otherwise default *)
+               let body = match msg.body_structure with
+                 | Some b -> b
+                 | None ->
+                   let fields = { params = []; content_id = None; description = None;
+                                  encoding = "7BIT"; size = msg.size } in
+                   { body_type = Text { subtype = "PLAIN"; fields; lines = 0L };
+                     disposition = None; language = None; location = None }
+               in
+               Some (Fetch_item_bodystructure body)
              | Fetch_rfc822 | Fetch_body_section ("", _) | Fetch_body_peek ("", _) ->
                (* BODY[] or RFC822 - return full message *)
                let data = match msg.raw_headers, msg.raw_body with

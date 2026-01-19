@@ -169,6 +169,177 @@ let write_envelope f (env : envelope) =
   write_nstring f env.message_id;
   write_char f ')'
 
+(* Write body parameters as parenthesized list or NIL *)
+let write_body_params f params =
+  match params with
+  | [] -> write_string f "NIL"
+  | _ ->
+    write_char f '(';
+    List.iteri (fun i (k, v) ->
+      if i > 0 then write_sp f;
+      write_quoted_string f k;
+      write_sp f;
+      write_quoted_string f v
+    ) params;
+    write_char f ')'
+
+(* Write body fields: (params) content-id description encoding size *)
+let write_body_fields f (fields : body_fields) =
+  write_body_params f fields.params;
+  write_sp f;
+  write_nstring f fields.content_id;
+  write_sp f;
+  write_nstring f fields.description;
+  write_sp f;
+  write_quoted_string f fields.encoding;
+  write_sp f;
+  write_string f (Int64.to_string fields.size)
+
+(* Write body disposition: NIL or (name (param-list)) *)
+let write_body_disposition f disp =
+  match disp with
+  | None -> write_string f "NIL"
+  | Some (name, params) ->
+    write_char f '(';
+    write_quoted_string f name;
+    write_sp f;
+    write_body_params f params;
+    write_char f ')'
+
+(* Write language list *)
+let write_body_language f lang =
+  match lang with
+  | None -> write_string f "NIL"
+  | Some [] -> write_string f "NIL"
+  | Some [l] -> write_quoted_string f l
+  | Some langs ->
+    write_char f '(';
+    List.iteri (fun i l ->
+      if i > 0 then write_sp f;
+      write_quoted_string f l
+    ) langs;
+    write_char f ')'
+
+(* Write BODY structure (basic, without extension data) *)
+let rec write_body f (bs : body_structure) =
+  match bs.body_type with
+  | Text { subtype; fields; lines } ->
+    write_char f '(';
+    write_quoted_string f "TEXT";
+    write_sp f;
+    write_quoted_string f subtype;
+    write_sp f;
+    write_body_fields f fields;
+    write_sp f;
+    write_string f (Int64.to_string lines);
+    write_char f ')'
+  | Basic { media_type; subtype; fields } ->
+    write_char f '(';
+    write_quoted_string f media_type;
+    write_sp f;
+    write_quoted_string f subtype;
+    write_sp f;
+    write_body_fields f fields;
+    write_char f ')'
+  | Message_rfc822 { fields; envelope; body; lines } ->
+    write_char f '(';
+    write_quoted_string f "MESSAGE";
+    write_sp f;
+    write_quoted_string f "RFC822";
+    write_sp f;
+    write_body_fields f fields;
+    write_sp f;
+    write_envelope f envelope;
+    write_sp f;
+    write_body f body;
+    write_sp f;
+    write_string f (Int64.to_string lines);
+    write_char f ')'
+  | Multipart { subtype; parts; params = _ } ->
+    write_char f '(';
+    List.iter (fun part -> write_body f part) parts;
+    write_sp f;
+    write_quoted_string f subtype;
+    write_char f ')'
+
+(* Write BODYSTRUCTURE (extended, with extension data) *)
+let rec write_bodystructure f (bs : body_structure) =
+  match bs.body_type with
+  | Text { subtype; fields; lines } ->
+    write_char f '(';
+    write_quoted_string f "TEXT";
+    write_sp f;
+    write_quoted_string f subtype;
+    write_sp f;
+    write_body_fields f fields;
+    write_sp f;
+    write_string f (Int64.to_string lines);
+    (* Extension data: md5, disposition, language, location *)
+    write_sp f;
+    write_string f "NIL";  (* md5 *)
+    write_sp f;
+    write_body_disposition f bs.disposition;
+    write_sp f;
+    write_body_language f bs.language;
+    write_sp f;
+    write_nstring f bs.location;
+    write_char f ')'
+  | Basic { media_type; subtype; fields } ->
+    write_char f '(';
+    write_quoted_string f media_type;
+    write_sp f;
+    write_quoted_string f subtype;
+    write_sp f;
+    write_body_fields f fields;
+    (* Extension data *)
+    write_sp f;
+    write_string f "NIL";  (* md5 *)
+    write_sp f;
+    write_body_disposition f bs.disposition;
+    write_sp f;
+    write_body_language f bs.language;
+    write_sp f;
+    write_nstring f bs.location;
+    write_char f ')'
+  | Message_rfc822 { fields; envelope; body; lines } ->
+    write_char f '(';
+    write_quoted_string f "MESSAGE";
+    write_sp f;
+    write_quoted_string f "RFC822";
+    write_sp f;
+    write_body_fields f fields;
+    write_sp f;
+    write_envelope f envelope;
+    write_sp f;
+    write_bodystructure f body;
+    write_sp f;
+    write_string f (Int64.to_string lines);
+    (* Extension data *)
+    write_sp f;
+    write_string f "NIL";  (* md5 *)
+    write_sp f;
+    write_body_disposition f bs.disposition;
+    write_sp f;
+    write_body_language f bs.language;
+    write_sp f;
+    write_nstring f bs.location;
+    write_char f ')'
+  | Multipart { subtype; parts; params } ->
+    write_char f '(';
+    List.iter (fun part -> write_bodystructure f part) parts;
+    write_sp f;
+    write_quoted_string f subtype;
+    (* Extension data for multipart *)
+    write_sp f;
+    write_body_params f params;
+    write_sp f;
+    write_body_disposition f bs.disposition;
+    write_sp f;
+    write_body_language f bs.language;
+    write_sp f;
+    write_nstring f bs.location;
+    write_char f ')'
+
 let write_response_code f code =
   write_char f '[';
   (match code with
@@ -392,13 +563,10 @@ let serialize_response f resp =
         write_envelope f env
       | Fetch_item_body body_struct ->
         write_string f "BODY ";
-        (* Basic body structure - single part for now *)
-        let _ = body_struct in
-        write_string f "(\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 0 0)"
+        write_body f body_struct
       | Fetch_item_bodystructure body_struct ->
         write_string f "BODYSTRUCTURE ";
-        let _ = body_struct in
-        write_string f "(\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 0 0 NIL NIL NIL NIL)"
+        write_bodystructure f body_struct
       | Fetch_item_body_section { section = _; origin; data } ->
         write_string f "BODY[] ";
         (match origin with Some o -> write_string f ("<" ^ string_of_int o ^ "> ") | None -> ());
