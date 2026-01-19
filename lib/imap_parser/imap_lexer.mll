@@ -162,6 +162,7 @@ rule token = parse
   | '{'       { LBRACE }
   | '}'       { RBRACE }
   | '*'       { STAR }
+  | '%'       { PERCENT }
   | '+'       { PLUS }
   | '-'       { MINUS }
   | ':'       { COLON }

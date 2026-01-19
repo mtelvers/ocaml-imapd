@@ -11,7 +11,7 @@ open Imap_types
 %token EOF
 %token SP CRLF
 %token LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE
-%token STAR PLUS MINUS COLON COMMA DOT LANGLE RANGLE
+%token STAR PERCENT PLUS MINUS COLON COMMA DOT LANGLE RANGLE
 
 (* Literals and strings *)
 %token <int64> NUMBER
@@ -484,7 +484,8 @@ enable_caps:
 list_mailbox:
   | s = astring { s }
   | s = QUOTED_STRING { s }
-  | STAR { "*" }  (* Wildcard pattern *)
+  | STAR { "*" }  (* Wildcard - matches any characters *)
+  | PERCENT { "%" }  (* Wildcard - matches any characters except hierarchy delimiter *)
   ;
 
 append_message:
