@@ -352,6 +352,10 @@ module Make
          List.iter (fun (msg : message) ->
            (* Build response items based on what was requested *)
            let fetch_items = List.filter_map (fun item ->
+             (match item with
+             | Fetch_body_peek (s, _) -> Eio.traceln "IMAP FETCH item: Fetch_body_peek %S" s
+             | Fetch_body_section (s, _) -> Eio.traceln "IMAP FETCH item: Fetch_body_section %S" s
+             | _ -> ());
              match item with
              | Fetch_uid -> Some (Fetch_item_uid msg.uid)
              | Fetch_flags -> Some (Fetch_item_flags msg.flags)
