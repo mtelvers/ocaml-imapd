@@ -109,6 +109,7 @@ let () =
       ("CHARSET", CHARSET);
       ("MIME", MIME);
       ("PEEK", PEEK);
+      ("FIELDS", FIELDS);
       ("HEADER.FIELDS", HEADER_FIELDS);
       ("HEADER.FIELDS.NOT", HEADER_FIELDS_NOT);
       ("SILENT", SILENT);

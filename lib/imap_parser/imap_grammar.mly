@@ -53,7 +53,7 @@ open Imap_types
 %token SUBJECT TEXT TO UNANSWERED UNDELETED UNDRAFT UNFLAGGED UNKEYWORD
 
 (* Other keywords *)
-%token CHARSET MIME PEEK HEADER_FIELDS HEADER_FIELDS_NOT SILENT
+%token CHARSET MIME PEEK FIELDS HEADER_FIELDS HEADER_FIELDS_NOT SILENT
 %token RETURN SUBSCRIBED CHILDREN REMOTE RECURSIVEMATCH DONE
 
 (* Entry point *)
@@ -201,6 +201,10 @@ flag_perm:
 (* section-spec for BODY[...] *)
 section_spec:
   | HEADER { "HEADER" }
+  (* HEADER.FIELDS is tokenized as HEADER DOT ATOM("FIELDS") since dot is a separate token *)
+  | HEADER DOT FIELDS SP LPAREN hs = header_list RPAREN { "HEADER.FIELDS (" ^ String.concat " " hs ^ ")" }
+  | HEADER DOT FIELDS DOT NOT SP LPAREN hs = header_list RPAREN { "HEADER.FIELDS.NOT (" ^ String.concat " " hs ^ ")" }
+  (* Also keep token versions in case lexer is updated *)
   | HEADER_FIELDS SP LPAREN hs = header_list RPAREN { "HEADER.FIELDS (" ^ String.concat " " hs ^ ")" }
   | HEADER_FIELDS_NOT SP LPAREN hs = header_list RPAREN { "HEADER.FIELDS.NOT (" ^ String.concat " " hs ^ ")" }
   | TEXT { "TEXT" }
