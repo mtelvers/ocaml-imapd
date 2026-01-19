@@ -144,8 +144,8 @@ let atom_char = [^ '(' ')' '{' '}' ' ' '\x00'-'\x1f' '\x7f' '%' '*' '"' '\\' ']'
 (* ASTRING-CHAR: ATOM-CHAR / resp-specials (allows ']') *)
 let astring_char = [^ '(' ')' '{' '}' ' ' '\x00'-'\x1f' '\x7f' '%' '*' '"' '\\' ':' ',' '<' '>' '+' '-' '.']
 
-(* TAG: 1*<any ASTRING-CHAR except "+"> *)
-let tag_char = [^ '(' ')' '{' '}' ' ' '\x00'-'\x1f' '\x7f' '%' '*' '"' '\\' '+' ':' ',' '<' '>' '-' '.']
+(* TAG: 1*<any ASTRING-CHAR except "+"> - note: allows dots for Apple Mail compatibility *)
+let tag_char = [^ '(' ')' '{' '}' ' ' '\x00'-'\x1f' '\x7f' '%' '*' '"' '\\' '+']
 
 rule token = parse
   (* Whitespace - SP is significant in IMAP *)

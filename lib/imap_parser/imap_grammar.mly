@@ -92,8 +92,28 @@ nz_number:
   | n = NUMBER { if n = 0L then failwith "Expected non-zero number" else n }
   ;
 
-(* tag = 1*<any ASTRING-CHAR except "+"> *)
+(* tag = 1*<any ASTRING-CHAR except "+"> - allows dots, colons, etc. for Apple Mail compatibility *)
 tag:
+  | t = ATOM { t }
+  | n = NUMBER { Int64.to_string n }
+  | parts = tag_parts { String.concat "" parts }
+  ;
+
+(* Helper for compound tags like "1.169" or "a.b.c" *)
+tag_parts:
+  | p1 = tag_part; DOT; rest = tag_parts_rest { p1 :: "." :: rest }
+  | p1 = tag_part; COLON; rest = tag_parts_rest { p1 :: ":" :: rest }
+  | p1 = tag_part; MINUS; rest = tag_parts_rest { p1 :: "-" :: rest }
+  ;
+
+tag_parts_rest:
+  | p = tag_part { [p] }
+  | p = tag_part; DOT; rest = tag_parts_rest { p :: "." :: rest }
+  | p = tag_part; COLON; rest = tag_parts_rest { p :: ":" :: rest }
+  | p = tag_part; MINUS; rest = tag_parts_rest { p :: "-" :: rest }
+  ;
+
+tag_part:
   | t = ATOM { t }
   | n = NUMBER { Int64.to_string n }
   ;
