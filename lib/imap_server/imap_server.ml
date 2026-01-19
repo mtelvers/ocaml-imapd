@@ -383,8 +383,8 @@ module Make
              | Fetch_rfc822 | Fetch_body_section ("", None) | Fetch_body_peek ("", None) ->
                (* BODY[] or RFC822 - return full message *)
                let data = match msg.raw_headers, msg.raw_body with
-                 | Some h, Some b -> Some (h ^ "\r\n" ^ b)
-                 | Some h, None -> Some h
+                 | Some h, Some b -> Some (h ^ "\r\n\r\n" ^ b)
+                 | Some h, None -> Some (h ^ "\r\n")
                  | None, Some b -> Some b
                  | None, None -> None
                in
@@ -392,8 +392,8 @@ module Make
              | Fetch_body_section ("", Some (offset, count)) | Fetch_body_peek ("", Some (offset, count)) ->
                (* BODY[]<offset.count> - return partial message *)
                let full_data = match msg.raw_headers, msg.raw_body with
-                 | Some h, Some b -> h ^ "\r\n" ^ b
-                 | Some h, None -> h
+                 | Some h, Some b -> h ^ "\r\n\r\n" ^ b
+                 | Some h, None -> h ^ "\r\n"
                  | None, Some b -> b
                  | None, None -> ""
                in
@@ -423,8 +423,8 @@ module Make
                 | None ->
                   (* Other section types - return full message for now *)
                   let data = match msg.raw_headers, msg.raw_body with
-                    | Some h, Some b -> Some (h ^ "\r\n" ^ b)
-                    | Some h, None -> Some h
+                    | Some h, Some b -> Some (h ^ "\r\n\r\n" ^ b)
+                    | Some h, None -> Some (h ^ "\r\n")
                     | None, Some b -> Some b
                     | None, None -> None
                   in
