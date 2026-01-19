@@ -251,6 +251,7 @@ hyphenated_name_rest:
   ;
 
 (* A part of a hyphenated name - can be ATOM or a keyword that's also a valid name component *)
+(* Header field names like "message-id", "list-unsubscribe", "in-reply-to" contain keyword tokens *)
 name_part:
   | s = ATOM { s }
   | FROM { "from" }
@@ -269,6 +270,18 @@ name_part:
   | NEW { "new" }
   | OLD { "old" }
   | ALL { "all" }
+  | ID { "id" }
+  | LIST { "list" }
+  | SUBSCRIBE { "subscribe" }
+  | UNSUBSCRIBE { "unsubscribe" }
+  | DELETE { "delete" }
+  | COPY { "copy" }
+  | MOVE { "move" }
+  | FETCH { "fetch" }
+  | STORE { "store" }
+  | SEARCH { "search" }
+  | STATUS { "status" }
+  | SIZE { "size" }
   ;
 
 (* partial = "<" number "." nz-number ">" *)

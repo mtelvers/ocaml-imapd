@@ -17,3 +17,7 @@
 (test
  (name test_server)
  (libraries imap_types imap_parser alcotest))
+
+(executable
+ (name test_lex)
+ (libraries imap_parser))
