@@ -34,7 +34,7 @@ open Imap_types
 
 (* Commands - Authenticated *)
 %token ENABLE SELECT EXAMINE CREATE DELETE RENAME
-%token SUBSCRIBE UNSUBSCRIBE LIST NAMESPACE STATUS APPEND IDLE
+%token SUBSCRIBE UNSUBSCRIBE LIST LSUB NAMESPACE STATUS APPEND IDLE
 
 (* Commands - Selected *)
 %token CLOSE UNSELECT EXPUNGE SEARCH FETCH STORE COPY MOVE UID
@@ -242,12 +242,33 @@ header_name:
   ;
 
 hyphenated_name:
-  | h = ATOM MINUS rest = hyphenated_name_rest { h :: rest }
+  | h = name_part MINUS rest = hyphenated_name_rest { h :: rest }
   ;
 
 hyphenated_name_rest:
-  | h = ATOM { [h] }
-  | h = ATOM MINUS rest = hyphenated_name_rest { h :: rest }
+  | h = name_part { [h] }
+  | h = name_part MINUS rest = hyphenated_name_rest { h :: rest }
+  ;
+
+(* A part of a hyphenated name - can be ATOM or a keyword that's also a valid name component *)
+name_part:
+  | s = ATOM { s }
+  | FROM { "from" }
+  | TO { "to" }
+  | CC { "cc" }
+  | BCC { "bcc" }
+  | SUBJECT { "subject" }
+  | TEXT { "text" }
+  | HEADER { "header" }
+  | BODY { "body" }
+  | UID { "uid" }
+  | FLAGS { "flags" }
+  | NOT { "not" }
+  | OR { "or" }
+  | ON { "on" }
+  | NEW { "new" }
+  | OLD { "old" }
+  | ALL { "all" }
   ;
 
 (* partial = "<" number "." nz-number ">" *)
@@ -430,6 +451,7 @@ command_auth:
   | SUBSCRIBE SP mb = mailbox { Subscribe mb }
   | UNSUBSCRIBE SP mb = mailbox { Unsubscribe mb }
   | LIST SP ref = astring SP pat = list_mailbox { List { reference = ref; pattern = pat } }
+  | LSUB SP ref = astring SP pat = list_mailbox { List { reference = ref; pattern = pat } }  (* LSUB treated as LIST *)
   | NAMESPACE { Namespace }
   | STATUS SP mb = mailbox SP LPAREN atts = status_att_list RPAREN { Status { mailbox = mb; items = atts } }
   | APPEND SP mb = mailbox SP fl = flag_list SP dt = date_time SP msg = append_message
@@ -449,6 +471,7 @@ enable_caps:
 list_mailbox:
   | s = astring { s }
   | s = QUOTED_STRING { s }
+  | STAR { "*" }  (* Wildcard pattern *)
   ;
 
 append_message:

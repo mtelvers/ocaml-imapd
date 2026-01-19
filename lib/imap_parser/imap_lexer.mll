@@ -42,6 +42,7 @@ let () =
       ("SUBSCRIBE", SUBSCRIBE);
       ("UNSUBSCRIBE", UNSUBSCRIBE);
       ("LIST", LIST);
+      ("LSUB", LSUB);
       ("NAMESPACE", NAMESPACE);
       ("STATUS", STATUS);
       ("APPEND", APPEND);
