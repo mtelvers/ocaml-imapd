@@ -925,8 +925,11 @@ module Make
       match read_line flow with
       | None -> `Done  (* Connection closed *)
       | Some line ->
+        (* Debug: log received command *)
+        Eio.traceln "IMAP < %s" (String.trim line);
         match parse_command line with
-        | Error _msg ->
+        | Error msg ->
+          Eio.traceln "IMAP ! Parse error: %s" msg;
           send_response flow (Bad {
             tag = None;
             code = None;
@@ -1016,8 +1019,11 @@ module Make
       match read_line flow with
       | None -> ()  (* Connection closed *)
       | Some line ->
+        (* Debug: log received command *)
+        Eio.traceln "IMAP < %s" (String.trim line);
         match parse_command line with
-        | Error _ ->
+        | Error msg ->
+          Eio.traceln "IMAP ! Parse error: %s" msg;
           send_response flow (Bad { tag = None; code = None; text = "Invalid command syntax" });
           auth_loop ()
         | Result.Ok cmd ->
