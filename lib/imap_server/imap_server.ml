@@ -380,7 +380,7 @@ module Make
                      disposition = None; language = None; location = None }
                in
                Some (Fetch_item_bodystructure body)
-             | Fetch_rfc822 | Fetch_body_section ("", _) | Fetch_body_peek ("", _) ->
+             | Fetch_rfc822 | Fetch_body_section ("", None) | Fetch_body_peek ("", None) ->
                (* BODY[] or RFC822 - return full message *)
                let data = match msg.raw_headers, msg.raw_body with
                  | Some h, Some b -> Some (h ^ "\r\n" ^ b)
@@ -389,6 +389,22 @@ module Make
                  | None, None -> None
                in
                Some (Fetch_item_body_section { section = None; origin = None; data })
+             | Fetch_body_section ("", Some (offset, count)) | Fetch_body_peek ("", Some (offset, count)) ->
+               (* BODY[]<offset.count> - return partial message *)
+               let full_data = match msg.raw_headers, msg.raw_body with
+                 | Some h, Some b -> h ^ "\r\n" ^ b
+                 | Some h, None -> h
+                 | None, Some b -> b
+                 | None, None -> ""
+               in
+               let data =
+                 if offset >= String.length full_data then Some ""
+                 else
+                   let available = String.length full_data - offset in
+                   let len = min count available in
+                   Some (String.sub full_data offset len)
+               in
+               Some (Fetch_item_body_section { section = None; origin = Some offset; data })
              | Fetch_rfc822_header | Fetch_body_section ("HEADER", _) | Fetch_body_peek ("HEADER", _) ->
                Some (Fetch_item_body_section { section = Some Section_header; origin = None; data = msg.raw_headers })
              | Fetch_rfc822_text | Fetch_body_section ("TEXT", _) | Fetch_body_peek ("TEXT", _) ->
