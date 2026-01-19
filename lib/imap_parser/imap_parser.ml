@@ -567,8 +567,40 @@ let serialize_response f resp =
       | Fetch_item_bodystructure body_struct ->
         write_string f "BODYSTRUCTURE ";
         write_bodystructure f body_struct
-      | Fetch_item_body_section { section = _; origin; data } ->
-        write_string f "BODY[] ";
+      | Fetch_item_body_section { section; origin; data } ->
+        write_string f "BODY[";
+        (match section with
+         | None -> ()
+         | Some Section_header -> write_string f "HEADER"
+         | Some Section_text -> write_string f "TEXT"
+         | Some Section_mime -> write_string f "MIME"
+         | Some (Section_header_fields fields) ->
+           write_string f "HEADER.FIELDS (";
+           write_string f (String.concat " " (List.map String.uppercase_ascii fields));
+           write_string f ")"
+         | Some (Section_header_fields_not fields) ->
+           write_string f "HEADER.FIELDS.NOT (";
+           write_string f (String.concat " " (List.map String.uppercase_ascii fields));
+           write_string f ")"
+         | Some (Section_part (parts, subsection)) ->
+           write_string f (String.concat "." (List.map string_of_int parts));
+           (match subsection with
+            | None -> ()
+            | Some Section_header -> write_string f ".HEADER"
+            | Some Section_text -> write_string f ".TEXT"
+            | Some Section_mime -> write_string f ".MIME"
+            | Some (Section_header_fields fields) ->
+              write_string f ".HEADER.FIELDS (";
+              write_string f (String.concat " " (List.map String.uppercase_ascii fields));
+              write_string f ")"
+            | Some (Section_header_fields_not fields) ->
+              write_string f ".HEADER.FIELDS.NOT (";
+              write_string f (String.concat " " (List.map String.uppercase_ascii fields));
+              write_string f ")"
+            | Some (Section_part _) -> () (* Nested part not supported *)
+           )
+        );
+        write_string f "] ";
         (match origin with Some o -> write_string f ("<" ^ string_of_int o ^ "> ") | None -> ());
         (match data with Some d -> write_literal f d | None -> write_string f "NIL")
       | Fetch_item_binary _ ->

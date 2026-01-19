@@ -73,6 +73,65 @@ module Make
 
   let create ~config ~storage ~auth = { config; storage; auth }
 
+  (* Parse HEADER.FIELDS section string to extract field names *)
+  (* e.g., "HEADER.FIELDS (date subject from)" -> Some ["date"; "subject"; "from"] *)
+  let parse_header_fields_section section =
+    let section = String.uppercase_ascii section in
+    if String.length section > 15 && String.sub section 0 14 = "HEADER.FIELDS " then
+      let rest = String.sub section 14 (String.length section - 14) in
+      (* Extract content between parentheses *)
+      let rest = String.trim rest in
+      if String.length rest >= 2 && rest.[0] = '(' && rest.[String.length rest - 1] = ')' then
+        let inner = String.sub rest 1 (String.length rest - 2) in
+        let fields = String.split_on_char ' ' inner in
+        let fields = List.filter (fun s -> String.length s > 0) fields in
+        Some (List.map String.lowercase_ascii fields)
+      else None
+    else if String.length section > 19 && String.sub section 0 18 = "HEADER.FIELDS.NOT " then
+      (* Handle HEADER.FIELDS.NOT - for now just return None, meaning full headers *)
+      None
+    else None
+
+  (* Filter headers to only include specified fields *)
+  (* Headers are in "Field-Name: value\r\n" format *)
+  let filter_headers raw_headers field_names =
+    match raw_headers with
+    | None -> None
+    | Some headers ->
+      let field_names = List.map String.lowercase_ascii field_names in
+      (* Split headers into lines, handling folded headers *)
+      let lines = String.split_on_char '\n' headers in
+      let lines = List.map (fun l ->
+        if String.length l > 0 && l.[String.length l - 1] = '\r'
+        then String.sub l 0 (String.length l - 1)
+        else l
+      ) lines in
+      (* Group lines into headers (continuation lines start with whitespace) *)
+      let rec group_headers acc current = function
+        | [] ->
+          let acc = if current <> "" then current :: acc else acc in
+          List.rev acc
+        | line :: rest ->
+          if String.length line > 0 && (line.[0] = ' ' || line.[0] = '\t') then
+            (* Continuation line *)
+            group_headers acc (current ^ "\r\n" ^ line) rest
+          else if current = "" then
+            group_headers acc line rest
+          else
+            group_headers (current :: acc) line rest
+      in
+      let header_lines = group_headers [] "" lines in
+      (* Filter headers by field name *)
+      let filtered = List.filter (fun header ->
+        match String.index_opt header ':' with
+        | None -> false
+        | Some idx ->
+          let name = String.lowercase_ascii (String.trim (String.sub header 0 idx)) in
+          List.mem name field_names
+      ) header_lines in
+      if filtered = [] then Some ""
+      else Some (String.concat "\r\n" filtered ^ "\r\n")
+
   let all_capabilities t ~tls_active =
     let base = if tls_active then base_capabilities_post_tls else base_capabilities_pre_tls in
     base @ t.config.capabilities
@@ -335,15 +394,25 @@ module Make
              | Fetch_rfc822_text | Fetch_body_section ("TEXT", _) | Fetch_body_peek ("TEXT", _) ->
                Some (Fetch_item_body_section { section = Some Section_text; origin = None; data = msg.raw_body })
              | Fetch_body_section (s, _) | Fetch_body_peek (s, _) ->
-               (* Handle other section specifiers - for now return full body *)
-               let _ = s in
-               let data = match msg.raw_headers, msg.raw_body with
-                 | Some h, Some b -> Some (h ^ "\r\n" ^ b)
-                 | Some h, None -> Some h
-                 | None, Some b -> Some b
-                 | None, None -> None
-               in
-               Some (Fetch_item_body_section { section = None; origin = None; data })
+               (* Handle section specifiers *)
+               (match parse_header_fields_section s with
+                | Some field_names ->
+                  (* HEADER.FIELDS (...) - filter to requested headers *)
+                  let data = filter_headers msg.raw_headers field_names in
+                  Some (Fetch_item_body_section {
+                    section = Some (Section_header_fields field_names);
+                    origin = None;
+                    data
+                  })
+                | None ->
+                  (* Other section types - return full message for now *)
+                  let data = match msg.raw_headers, msg.raw_body with
+                    | Some h, Some b -> Some (h ^ "\r\n" ^ b)
+                    | Some h, None -> Some h
+                    | None, Some b -> Some b
+                    | None, None -> None
+                  in
+                  Some (Fetch_item_body_section { section = None; origin = None; data }))
              | Fetch_binary _ | Fetch_binary_peek _ | Fetch_binary_size _ ->
                (* Binary not implemented yet *)
                None
