@@ -214,8 +214,24 @@ section_part:
   ;
 
 header_list:
-  | h = astring { [h] }
-  | h = astring SP hs = header_list { h :: hs }
+  | h = header_name { [h] }
+  | h = header_name SP hs = header_list { h :: hs }
+  ;
+
+(* Header field names can contain hyphens, e.g., "message-id", "content-type" *)
+header_name:
+  | s = ATOM { s }
+  | s = QUOTED_STRING { s }
+  | parts = hyphenated_name { String.concat "-" parts }
+  ;
+
+hyphenated_name:
+  | h = ATOM MINUS rest = hyphenated_name_rest { h :: rest }
+  ;
+
+hyphenated_name_rest:
+  | h = ATOM { [h] }
+  | h = ATOM MINUS rest = hyphenated_name_rest { h :: rest }
   ;
 
 (* partial = "<" number "." nz-number ">" *)
