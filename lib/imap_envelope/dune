@@ -1,0 +1,4 @@
+(library
+ (name imap_envelope)
+ (public_name imapd.envelope)
+ (libraries imap_types str base64))

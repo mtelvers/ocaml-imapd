@@ -1,4 +1,4 @@
 (library
  (name imap_storage)
  (public_name imapd.storage)
- (libraries imap_types eio unix))
+ (libraries imap_types imap_envelope eio unix))

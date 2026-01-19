@@ -119,6 +119,56 @@ let write_flag_list f flags =
   ) flags;
   write_char f ')'
 
+(* Write NIL or quoted string for envelope fields *)
+let write_nstring f = function
+  | None -> write_string f "NIL"
+  | Some s -> write_quoted_string f s
+
+(* Write a single address per RFC 9051 *)
+let write_address f (addr : address) =
+  write_char f '(';
+  write_nstring f addr.name;
+  write_sp f;
+  write_nstring f addr.adl;
+  write_sp f;
+  write_nstring f addr.mailbox;
+  write_sp f;
+  write_nstring f addr.host;
+  write_char f ')'
+
+(* Write an address list (NIL if empty, or parenthesized list) *)
+let write_address_list f addrs =
+  match addrs with
+  | [] -> write_string f "NIL"
+  | _ ->
+    write_char f '(';
+    List.iter (fun addr -> write_address f addr) addrs;
+    write_char f ')'
+
+(* Write ENVELOPE per RFC 9051 Section 7.5.2 *)
+let write_envelope f (env : envelope) =
+  write_char f '(';
+  write_nstring f env.date;
+  write_sp f;
+  write_nstring f env.subject;
+  write_sp f;
+  write_address_list f env.from;
+  write_sp f;
+  write_address_list f env.sender;
+  write_sp f;
+  write_address_list f env.reply_to;
+  write_sp f;
+  write_address_list f env.to_;
+  write_sp f;
+  write_address_list f env.cc;
+  write_sp f;
+  write_address_list f env.bcc;
+  write_sp f;
+  write_nstring f env.in_reply_to;
+  write_sp f;
+  write_nstring f env.message_id;
+  write_char f ')'
+
 let write_response_code f code =
   write_char f '[';
   (match code with
@@ -337,11 +387,27 @@ let serialize_response f resp =
       | Fetch_item_rfc822_size size ->
         write_string f "RFC822.SIZE ";
         write_string f (Int64.to_string size)
+      | Fetch_item_envelope env ->
+        write_string f "ENVELOPE ";
+        write_envelope f env
+      | Fetch_item_body body_struct ->
+        write_string f "BODY ";
+        (* Basic body structure - single part for now *)
+        let _ = body_struct in
+        write_string f "(\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 0 0)"
+      | Fetch_item_bodystructure body_struct ->
+        write_string f "BODYSTRUCTURE ";
+        let _ = body_struct in
+        write_string f "(\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 0 0 NIL NIL NIL NIL)"
       | Fetch_item_body_section { section = _; origin; data } ->
         write_string f "BODY[] ";
         (match origin with Some o -> write_string f ("<" ^ string_of_int o ^ "> ") | None -> ());
         (match data with Some d -> write_literal f d | None -> write_string f "NIL")
-      | _ -> write_string f "..."
+      | Fetch_item_binary _ ->
+        write_string f "BINARY NIL"
+      | Fetch_item_binary_size { section = _; size } ->
+        write_string f "BINARY.SIZE ";
+        write_string f (Int64.to_string size)
     ) items;
     write_char f ')';
     write_crlf f

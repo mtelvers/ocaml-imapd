@@ -653,6 +653,27 @@ module Maildir_storage = struct
       Some content
     with _ -> None
 
+  (* Build message with envelope parsed from raw content *)
+  let build_message ~uid ~seq ~flags ~internal_date ~size ~raw_content =
+    let envelope, raw_headers, raw_body = match raw_content with
+      | Some content ->
+        let env = Imap_envelope.parse_envelope content in
+        let headers, body = Imap_envelope.parse_message content in
+        (Some env, Some headers, Some body)
+      | None -> (None, None, None)
+    in
+    {
+      uid;
+      seq;
+      flags;
+      internal_date;
+      size;
+      envelope;
+      body_structure = None;  (* TODO: implement body structure parsing *)
+      raw_headers;
+      raw_body;
+    }
+
   (* Parse internal date from message or use file mtime *)
   let get_internal_date filepath =
     try
@@ -860,17 +881,10 @@ module Maildir_storage = struct
             let stats = Unix.stat filepath in
             Int64.of_int stats.Unix.st_size
           with _ -> 0L in
-          Some {
-            uid;
-            seq;
-            flags;
-            internal_date = get_internal_date filepath;
-            size;
-            envelope = None;
-            body_structure = None;
-            raw_headers = None;
-            raw_body = (match read_message_file filepath with Some s -> Some s | None -> None);
-          }
+          let raw_content = read_message_file filepath in
+          Some (build_message ~uid ~seq ~flags
+                  ~internal_date:(get_internal_date filepath)
+                  ~size ~raw_content)
         end else None
       ) messages in
       save_uid_map path map;
@@ -902,17 +916,10 @@ module Maildir_storage = struct
             let stats = Unix.stat filepath in
             Int64.of_int stats.Unix.st_size
           with _ -> 0L in
-          Some {
-            uid;
-            seq = i + 1;
-            flags;
-            internal_date = get_internal_date filepath;
-            size;
-            envelope = None;
-            body_structure = None;
-            raw_headers = None;
-            raw_body = read_message_file filepath;
-          }
+          let raw_content = read_message_file filepath in
+          Some (build_message ~uid ~seq:(i + 1) ~flags
+                  ~internal_date:(get_internal_date filepath)
+                  ~size ~raw_content)
         end else None
       ) messages in
       save_uid_map path map;
