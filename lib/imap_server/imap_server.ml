@@ -343,17 +343,6 @@ module Make
 
   (* Process FETCH command *)
   let handle_fetch t flow tag ~sequence ~items state =
-    Eio.traceln "IMAP handle_fetch: %d items requested" (List.length items);
-    List.iter (fun item ->
-      match item with
-      | Fetch_body_peek (s, _) -> Eio.traceln "  item: Fetch_body_peek %S" s
-      | Fetch_body_section (s, _) -> Eio.traceln "  item: Fetch_body_section %S" s
-      | Fetch_uid -> Eio.traceln "  item: Fetch_uid"
-      | Fetch_flags -> Eio.traceln "  item: Fetch_flags"
-      | Fetch_rfc822_size -> Eio.traceln "  item: Fetch_rfc822_size"
-      | Fetch_internaldate -> Eio.traceln "  item: Fetch_internaldate"
-      | _ -> Eio.traceln "  item: other"
-    ) items;
     match state with
     | Selected { username; mailbox; _ } ->
       (match Storage.fetch_messages t.storage ~username ~mailbox ~sequence ~items with
@@ -363,10 +352,6 @@ module Make
          List.iter (fun (msg : message) ->
            (* Build response items based on what was requested *)
            let fetch_items = List.filter_map (fun item ->
-             (match item with
-             | Fetch_body_peek (s, _) -> Eio.traceln "IMAP FETCH item: Fetch_body_peek %S" s
-             | Fetch_body_section (s, _) -> Eio.traceln "IMAP FETCH item: Fetch_body_section %S" s
-             | _ -> ());
              match item with
              | Fetch_uid -> Some (Fetch_item_uid msg.uid)
              | Fetch_flags -> Some (Fetch_item_flags msg.flags)
@@ -410,7 +395,6 @@ module Make
                Some (Fetch_item_body_section { section = Some Section_text; origin = None; data = msg.raw_body })
              | Fetch_body_section (s, _) | Fetch_body_peek (s, _) ->
                (* Handle section specifiers *)
-               Eio.traceln "IMAP section spec: %S" s;
                (match parse_header_fields_section s with
                 | Some field_names ->
                   (* HEADER.FIELDS (...) - filter to requested headers *)
