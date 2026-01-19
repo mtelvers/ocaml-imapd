@@ -291,12 +291,50 @@ module Make
          send_response flow (No { tag = Some tag; code = None; text = "FETCH failed" })
        | Ok messages ->
          List.iter (fun (msg : message) ->
-           let fetch_items = [
-             Fetch_item_uid msg.uid;
-             Fetch_item_flags msg.flags;
-             Fetch_item_rfc822_size msg.size;
-             Fetch_item_internaldate msg.internal_date;
-           ] in
+           (* Build response items based on what was requested *)
+           let fetch_items = List.filter_map (fun item ->
+             match item with
+             | Fetch_uid -> Some (Fetch_item_uid msg.uid)
+             | Fetch_flags -> Some (Fetch_item_flags msg.flags)
+             | Fetch_rfc822_size -> Some (Fetch_item_rfc822_size msg.size)
+             | Fetch_internaldate -> Some (Fetch_item_internaldate msg.internal_date)
+             | Fetch_envelope -> Option.map (fun e -> Fetch_item_envelope e) msg.envelope
+             | Fetch_body -> Option.map (fun b -> Fetch_item_body b) msg.body_structure
+             | Fetch_bodystructure -> Option.map (fun b -> Fetch_item_bodystructure b) msg.body_structure
+             | Fetch_rfc822 | Fetch_body_section ("", _) | Fetch_body_peek ("", _) ->
+               (* BODY[] or RFC822 - return full message *)
+               let data = match msg.raw_headers, msg.raw_body with
+                 | Some h, Some b -> Some (h ^ "\r\n" ^ b)
+                 | Some h, None -> Some h
+                 | None, Some b -> Some b
+                 | None, None -> None
+               in
+               Some (Fetch_item_body_section { section = None; origin = None; data })
+             | Fetch_rfc822_header | Fetch_body_section ("HEADER", _) | Fetch_body_peek ("HEADER", _) ->
+               Some (Fetch_item_body_section { section = Some Section_header; origin = None; data = msg.raw_headers })
+             | Fetch_rfc822_text | Fetch_body_section ("TEXT", _) | Fetch_body_peek ("TEXT", _) ->
+               Some (Fetch_item_body_section { section = Some Section_text; origin = None; data = msg.raw_body })
+             | Fetch_body_section (s, _) | Fetch_body_peek (s, _) ->
+               (* Handle other section specifiers - for now return full body *)
+               let _ = s in
+               let data = match msg.raw_headers, msg.raw_body with
+                 | Some h, Some b -> Some (h ^ "\r\n" ^ b)
+                 | Some h, None -> Some h
+                 | None, Some b -> Some b
+                 | None, None -> None
+               in
+               Some (Fetch_item_body_section { section = None; origin = None; data })
+             | Fetch_binary _ | Fetch_binary_peek _ | Fetch_binary_size _ ->
+               (* Binary not implemented yet *)
+               None
+           ) items in
+           (* Always include UID in the response *)
+           let fetch_items =
+             if List.exists (function Fetch_item_uid _ -> true | _ -> false) fetch_items then
+               fetch_items
+             else
+               Fetch_item_uid msg.uid :: fetch_items
+           in
            send_response flow (Fetch_response { seq = msg.seq; items = fetch_items })
          ) messages;
          send_response flow (Ok { tag = Some tag; code = None; text = "FETCH completed" }));
