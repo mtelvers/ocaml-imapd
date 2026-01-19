@@ -407,8 +407,22 @@ module Make
                Some (Fetch_item_body_section { section = None; origin = Some offset; data })
              | Fetch_rfc822_header | Fetch_body_section ("HEADER", _) | Fetch_body_peek ("HEADER", _) ->
                Some (Fetch_item_body_section { section = Some Section_header; origin = None; data = msg.raw_headers })
-             | Fetch_rfc822_text | Fetch_body_section ("TEXT", _) | Fetch_body_peek ("TEXT", _) ->
+             | Fetch_rfc822_text | Fetch_body_section ("TEXT", None) | Fetch_body_peek ("TEXT", None) ->
                Some (Fetch_item_body_section { section = Some Section_text; origin = None; data = msg.raw_body })
+             | Fetch_body_section ("TEXT", Some (offset, count)) | Fetch_body_peek ("TEXT", Some (offset, count)) ->
+               (* BODY[TEXT]<offset.count> - return partial body text *)
+               let full_data = match msg.raw_body with
+                 | Some b -> b
+                 | None -> ""
+               in
+               let data =
+                 if offset >= String.length full_data then Some ""
+                 else
+                   let available = String.length full_data - offset in
+                   let len = min count available in
+                   Some (String.sub full_data offset len)
+               in
+               Some (Fetch_item_body_section { section = Some Section_text; origin = Some offset; data })
              | Fetch_body_section (s, _) | Fetch_body_peek (s, _) ->
                (* Handle section specifiers *)
                (match parse_header_fields_section s with
