@@ -32,5 +32,4 @@
   (tls (>= 0.15))
   (faraday (>= 0.8))
   (cmdliner (>= 1.2))
-  (conf-libpam :build)
   (alcotest (and (>= 1.7) :with-test))))
