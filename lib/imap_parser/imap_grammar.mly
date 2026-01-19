@@ -223,10 +223,22 @@ header_list:
   ;
 
 (* Header field names can contain hyphens, e.g., "message-id", "content-type" *)
+(* Also accept keyword tokens that are valid header names *)
 header_name:
   | s = ATOM { s }
   | s = QUOTED_STRING { s }
   | parts = hyphenated_name { String.concat "-" parts }
+  (* Keywords that are also valid header field names *)
+  | FROM { "from" }
+  | TO { "to" }
+  | CC { "cc" }
+  | BCC { "bcc" }
+  | SUBJECT { "subject" }
+  | TEXT { "text" }
+  | HEADER { "header" }
+  | BODY { "body" }
+  | UID { "uid" }
+  | FLAGS { "flags" }
   ;
 
 hyphenated_name:
