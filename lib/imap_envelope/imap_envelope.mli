@@ -51,3 +51,9 @@ val parse_envelope : string -> envelope
 
 (** Parse raw message and return (headers_string, body_string). *)
 val parse_message : string -> string * string
+
+(** {1 Body Structure Parsing} *)
+
+(** Parse raw message and extract MIME body structure.
+    Handles multipart messages recursively. *)
+val parse_body_structure : string -> body_structure

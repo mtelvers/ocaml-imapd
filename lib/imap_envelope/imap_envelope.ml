@@ -262,3 +262,157 @@ let parse_envelope raw_message =
 let parse_message raw_message =
   let headers_str, body = split_headers_body raw_message in
   (headers_str, body)
+
+(** {1 MIME Body Structure Parsing} *)
+
+(** Parse Content-Type header value.
+    Returns (type, subtype, params) where params is a list of (name, value) pairs. *)
+let parse_content_type ct =
+  let ct = String.trim ct in
+  (* Split on semicolons to get type/subtype and parameters *)
+  let parts = String.split_on_char ';' ct in
+  match parts with
+  | [] -> ("text", "plain", [])
+  | type_part :: param_parts ->
+    let type_part = String.trim type_part in
+    let media_type, media_subtype =
+      match String.index_opt type_part '/' with
+      | Some i ->
+        (String.lowercase_ascii (String.sub type_part 0 i),
+         String.lowercase_ascii (String.sub type_part (i + 1) (String.length type_part - i - 1)))
+      | None -> (String.lowercase_ascii type_part, "plain")
+    in
+    (* Parse parameters like charset=utf-8 or boundary="..." *)
+    let params = List.filter_map (fun p ->
+      let p = String.trim p in
+      match String.index_opt p '=' with
+      | Some i ->
+        let name = String.lowercase_ascii (String.trim (String.sub p 0 i)) in
+        let value = String.trim (String.sub p (i + 1) (String.length p - i - 1)) in
+        (* Remove quotes if present *)
+        let value =
+          if String.length value >= 2 && value.[0] = '"' && value.[String.length value - 1] = '"' then
+            String.sub value 1 (String.length value - 2)
+          else value
+        in
+        Some (name, value)
+      | None -> None
+    ) param_parts in
+    (media_type, media_subtype, params)
+
+(** Extract boundary from multipart Content-Type params *)
+let get_boundary params =
+  List.find_map (fun (n, v) -> if n = "boundary" then Some v else None) params
+
+(** Split multipart body into parts using boundary.
+    Handles preamble and epilogue correctly. *)
+let split_multipart_body body boundary =
+  let delim = "--" ^ boundary in
+  let end_delim = "--" ^ boundary ^ "--" in
+  (* Split on boundary *)
+  let parts = ref [] in
+  let current_start = ref 0 in
+  let i = ref 0 in
+  let body_len = String.length body in
+  while !i < body_len do
+    (* Look for delimiter at start of line *)
+    if !i = 0 || (body.[!i - 1] = '\n') then begin
+      if !i + String.length end_delim <= body_len &&
+         String.sub body !i (String.length end_delim) = end_delim then begin
+        (* End delimiter - save last part and stop *)
+        if !current_start > 0 then begin
+          let part_end = if !i > 0 && body.[!i - 1] = '\n' then !i - 1 else !i in
+          let part_end = if part_end > 0 && body.[part_end - 1] = '\r' then part_end - 1 else part_end in
+          if part_end > !current_start then
+            parts := String.sub body !current_start (part_end - !current_start) :: !parts
+        end;
+        i := body_len  (* Stop *)
+      end else if !i + String.length delim <= body_len &&
+                  String.sub body !i (String.length delim) = delim then begin
+        (* Regular delimiter *)
+        if !current_start > 0 then begin
+          let part_end = if !i > 0 && body.[!i - 1] = '\n' then !i - 1 else !i in
+          let part_end = if part_end > 0 && body.[part_end - 1] = '\r' then part_end - 1 else part_end in
+          if part_end > !current_start then
+            parts := String.sub body !current_start (part_end - !current_start) :: !parts
+        end;
+        (* Skip delimiter and CRLF *)
+        i := !i + String.length delim;
+        while !i < body_len && (body.[!i] = '\r' || body.[!i] = '\n') do incr i done;
+        current_start := !i
+      end else
+        incr i
+    end else
+      incr i
+  done;
+  List.rev !parts
+
+(** Parse MIME body structure from headers and body.
+    Returns Imap_types.body_structure *)
+let rec parse_body_structure_from_parts headers_str body =
+  let headers = parse_header_lines headers_str in
+  let content_type = match get_header headers "content-type" with
+    | Some ct -> ct
+    | None -> "text/plain"
+  in
+  let (media_type, media_subtype, ct_params) = parse_content_type content_type in
+  let encoding = match get_header headers "content-transfer-encoding" with
+    | Some e -> String.uppercase_ascii (String.trim e)
+    | None -> "7BIT"
+  in
+  let content_id = get_header headers "content-id" in
+  let description = get_header headers "content-description" in
+
+  if media_type = "multipart" then begin
+    (* Multipart message - parse each part *)
+    match get_boundary ct_params with
+    | None ->
+      (* No boundary - treat as text/plain *)
+      let fields = {
+        params = [("charset", "us-ascii")];
+        content_id;
+        description;
+        encoding = "7BIT";
+        size = Int64.of_int (String.length body)
+      } in
+      let lines = Int64.of_int (List.length (String.split_on_char '\n' body)) in
+      { body_type = Text { subtype = "PLAIN"; fields; lines };
+        disposition = None; language = None; location = None }
+    | Some boundary ->
+      let parts = split_multipart_body body boundary in
+      let part_structures = List.map (fun part ->
+        let part_headers, part_body = split_headers_body part in
+        parse_body_structure_from_parts part_headers part_body
+      ) parts in
+      { body_type = Multipart {
+          subtype = String.uppercase_ascii media_subtype;
+          parts = part_structures;
+          params = ct_params
+        };
+        disposition = None; language = None; location = None }
+  end else begin
+    (* Single-part message *)
+    let size = Int64.of_int (String.length body) in
+    let fields = {
+      params = ct_params;
+      content_id;
+      description;
+      encoding;
+      size
+    } in
+    let body_type =
+      if media_type = "text" then begin
+        let lines = Int64.of_int (List.length (String.split_on_char '\n' body)) in
+        Text { subtype = String.uppercase_ascii media_subtype; fields; lines }
+      end else
+        Basic { media_type = String.uppercase_ascii media_type;
+                subtype = String.uppercase_ascii media_subtype;
+                fields }
+    in
+    { body_type; disposition = None; language = None; location = None }
+  end
+
+(** Parse body structure from raw message *)
+let parse_body_structure raw_message =
+  let headers_str, body = split_headers_body raw_message in
+  parse_body_structure_from_parts headers_str body

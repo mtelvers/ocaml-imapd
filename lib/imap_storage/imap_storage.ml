@@ -655,12 +655,13 @@ module Maildir_storage = struct
 
   (* Build message with envelope parsed from raw content *)
   let build_message ~uid ~seq ~flags ~internal_date ~size ~raw_content =
-    let envelope, raw_headers, raw_body = match raw_content with
+    let envelope, body_structure, raw_headers, raw_body = match raw_content with
       | Some content ->
         let env = Imap_envelope.parse_envelope content in
+        let body_struct = Imap_envelope.parse_body_structure content in
         let headers, body = Imap_envelope.parse_message content in
-        (Some env, Some headers, Some body)
-      | None -> (None, None, None)
+        (Some env, Some body_struct, Some headers, Some body)
+      | None -> (None, None, None, None)
     in
     {
       uid;
@@ -669,7 +670,7 @@ module Maildir_storage = struct
       internal_date;
       size;
       envelope;
-      body_structure = None;  (* TODO: implement body structure parsing *)
+      body_structure;
       raw_headers;
       raw_body;
     }
