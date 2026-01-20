@@ -970,7 +970,9 @@ module Make
           with
           | Eio.Time.Timeout -> ()  (* Normal timeout, continue polling *)
           | End_of_file -> ()
-          | Eio.Cancel.Cancelled _ -> ()  (* Cancellation from timeout *)
+          | exn ->
+            (* Log unexpected exceptions but don't crash *)
+            Eio.traceln "IDLE: exception in read: %s" (Printexc.to_string exn)
         end;
         !result
       in
