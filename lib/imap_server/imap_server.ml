@@ -946,34 +946,35 @@ module Make
       let input_buf = Buffer.create 64 in
       let cs = Cstruct.create 1 in
 
-      (* Main IDLE loop using Fiber.first to race read vs sleep *)
+      (* Main IDLE loop using with_timeout_exn for proper sleep behavior *)
       let rec idle_loop () =
-        (* Race between reading a line and sleeping *)
-        let read_result = Eio.Fiber.first
-          (fun () ->
-            (* Try to read a complete line *)
-            try
-              let rec read_char () =
-                let n = Eio.Flow.single_read flow cs in
-                if n > 0 then begin
-                  let c = Cstruct.get_char cs 0 in
-                  Buffer.add_char input_buf c;
-                  if c = '\n' then begin
-                    let line = Buffer.contents input_buf in
-                    Buffer.clear input_buf;
-                    `Line line
-                  end else
-                    read_char ()
+        (* Try to read with timeout - if no data arrives within poll_interval, check for changes *)
+        Eio.traceln "IDLE: waiting for input (timeout=%.1f)" poll_interval;
+        let read_result =
+          try
+            let rec read_char () : string =
+              let n = Eio.Flow.single_read flow cs in
+              Eio.traceln "IDLE: read returned %d bytes" n;
+              if n > 0 then begin
+                let c = Cstruct.get_char cs 0 in
+                Buffer.add_char input_buf c;
+                if c = '\n' then begin
+                  let line = Buffer.contents input_buf in
+                  Buffer.clear input_buf;
+                  line
                 end else
-                  read_char ()  (* Keep trying *)
-              in
-              read_char ()
-            with
-            | End_of_file -> `Closed
-            | Eio.Cancel.Cancelled _ -> `Timeout)
-          (fun () ->
-            Eio.Time.sleep clock poll_interval;
-            `Timeout)
+                  read_char ()
+              end else
+                read_char ()  (* Keep trying *)
+            in
+            `Line (Eio.Time.with_timeout_exn clock poll_interval read_char)
+          with
+          | Eio.Time.Timeout ->
+            Eio.traceln "IDLE: timeout occurred";
+            `Timeout
+          | End_of_file ->
+            Eio.traceln "IDLE: end of file";
+            `Closed
         in
         match read_result with
         | `Line line ->
