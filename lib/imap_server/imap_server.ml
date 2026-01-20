@@ -949,10 +949,6 @@ module Make
       (* Use Fiber.first with two separate fibers:
          1. Read fiber - blocks until "DONE" is received
          2. Poll fiber - periodically checks for new messages *)
-      Eio.traceln "IDLE: starting with initial count %d" !last_count;
-
-      let read_done = ref false in
-
       let result = Eio.Fiber.first
         (* Read fiber - waits for DONE command *)
         (fun () ->
@@ -973,27 +969,23 @@ module Make
                   read_char ()
               in
               let line = read_char () in
-              Eio.traceln "IDLE: received line: %s" (String.trim line);
               let trimmed = String.trim (String.uppercase_ascii line) in
-              if trimmed = "DONE" then begin
-                read_done := true;
+              if trimmed = "DONE" then
                 `Done
-              end else
+              else
                 read_loop ()  (* Ignore other input, keep reading *)
             in
             read_loop ()
-          with End_of_file ->
-            Eio.traceln "IDLE: connection closed";
-            `Closed)
+          with End_of_file -> `Closed)
         (* Poll fiber - checks for new messages every poll_interval *)
         (fun () ->
           let rec poll_loop () =
             Eio.Time.sleep clock poll_interval;
             let current_count = get_message_count () in
-            Eio.traceln "IDLE: polling, last=%d current=%d" !last_count current_count;
             if current_count > !last_count then begin
-              Eio.traceln "IDLE: sending EXISTS %d" current_count;
+              let new_messages = current_count - !last_count in
               send_response flow (Exists current_count);
+              send_response flow (Recent new_messages);
               last_count := current_count
             end;
             poll_loop ()

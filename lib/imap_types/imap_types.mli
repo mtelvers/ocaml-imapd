@@ -422,6 +422,7 @@ type response =
   | Esearch of { tag : string option; uid : bool; results : esearch_result list }
   | Flags_response of flag list
   | Exists of int
+  | Recent of int
   | Expunge_response of int
   | Fetch_response of { seq : int; items : fetch_response_item list }
   | Continuation of string option

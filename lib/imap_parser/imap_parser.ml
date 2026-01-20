@@ -65,6 +65,7 @@ type response = Imap_types.response =
   | Esearch of { tag : string option; uid : bool; results : esearch_result list }
   | Flags_response of flag list
   | Exists of int
+  | Recent of int
   | Expunge_response of int
   | Fetch_response of { seq : int; items : fetch_response_item list }
   | Continuation of string option
@@ -531,6 +532,12 @@ let serialize_response f resp =
     write_string f "* ";
     write_string f (string_of_int n);
     write_string f " EXISTS";
+    write_crlf f
+
+  | Recent n ->
+    write_string f "* ";
+    write_string f (string_of_int n);
+    write_string f " RECENT";
     write_crlf f
 
   | Expunge_response n ->
