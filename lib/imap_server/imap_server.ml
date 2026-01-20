@@ -946,15 +946,13 @@ module Make
       let input_buf = Buffer.create 64 in
       let cs = Cstruct.create 1 in
 
-      (* Main IDLE loop using with_timeout_exn for proper sleep behavior *)
+      (* Main IDLE loop using Switch.run for fresh cancellation context *)
       let rec idle_loop () =
-        (* Try to read with timeout - if no data arrives within poll_interval, check for changes *)
-        Eio.traceln "IDLE: waiting for input (timeout=%.1f)" poll_interval;
         let read_result =
+          Eio.Switch.run @@ fun _sw ->
           try
             let rec read_char () : string =
               let n = Eio.Flow.single_read flow cs in
-              Eio.traceln "IDLE: read returned %d bytes" n;
               if n > 0 then begin
                 let c = Cstruct.get_char cs 0 in
                 Buffer.add_char input_buf c;
@@ -965,19 +963,12 @@ module Make
                 end else
                   read_char ()
               end else
-                read_char ()  (* Keep trying *)
+                read_char ()
             in
             `Line (Eio.Time.with_timeout_exn clock poll_interval read_char)
           with
-          | Eio.Time.Timeout ->
-            Eio.traceln "IDLE: timeout occurred";
-            `Timeout
-          | Eio.Cancel.Cancelled _ ->
-            Eio.traceln "IDLE: cancelled (treating as timeout)";
-            `Timeout
-          | End_of_file ->
-            Eio.traceln "IDLE: end of file";
-            `Closed
+          | Eio.Time.Timeout -> `Timeout
+          | End_of_file -> `Closed
         in
         match read_result with
         | `Line line ->
