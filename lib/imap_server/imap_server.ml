@@ -342,10 +342,11 @@ module Make
         state
 
   (* Process FETCH command *)
-  let handle_fetch t flow tag ~sequence ~items state =
+  let handle_fetch t flow tag ~sequence ~items ?(use_uid=false) state =
     match state with
     | Selected { username; mailbox; _ } ->
-      (match Storage.fetch_messages t.storage ~username ~mailbox ~sequence ~items with
+      let fetch_fn = if use_uid then Storage.fetch_by_uid ~uids:sequence else Storage.fetch_messages ~sequence in
+      (match fetch_fn t.storage ~username ~mailbox ~items with
        | Error _ ->
          send_response flow (No { tag = Some tag; code = None; text = "FETCH failed" })
        | Ok messages ->
@@ -971,7 +972,7 @@ module Make
     match uid_cmd with
     | Uid_fetch { sequence; items } ->
       (* For UID FETCH, sequence is UIDs not sequence numbers *)
-      handle_fetch t flow tag ~sequence ~items state
+      handle_fetch t flow tag ~sequence ~items ~use_uid:true state
     | Uid_store { sequence; silent; action; flags } ->
       handle_store t flow tag ~sequence ~silent ~action ~flags state
     | Uid_copy { sequence; mailbox } ->
