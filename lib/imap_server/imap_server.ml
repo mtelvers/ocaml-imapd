@@ -949,12 +949,10 @@ module Make
       (* Try to read available data with timeout *)
       let try_read_line () =
         let result = ref None in
-        let read_complete = ref false in
         begin
-          match Eio.Time.with_timeout clock poll_interval (fun () ->
-            let rec read_char () =
-              if !read_complete then ()
-              else begin
+          try
+            Eio.Time.with_timeout_exn clock poll_interval (fun () ->
+              let rec read_char () =
                 let n = Eio.Flow.single_read flow cs in
                 if n > 0 then begin
                   let c = Cstruct.get_char cs 0 in
@@ -962,18 +960,17 @@ module Make
                   if c = '\n' then begin
                     let line = Buffer.contents input_buf in
                     Buffer.clear input_buf;
-                    result := Some line;
-                    read_complete := true
+                    result := Some line
                   end else
                     read_char ()
                 end
-              end
-            in
-            try read_char (); Ok ()
-            with End_of_file -> read_complete := true; Ok ()
-          ) with
-          | Ok () -> ()
-          | Error `Timeout -> ()
+              in
+              read_char ()
+            )
+          with
+          | Eio.Time.Timeout -> ()  (* Normal timeout, continue polling *)
+          | End_of_file -> ()
+          | Eio.Cancel.Cancelled _ -> ()  (* Cancellation from timeout *)
         end;
         !result
       in
