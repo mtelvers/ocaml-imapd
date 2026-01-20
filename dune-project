@@ -25,6 +25,7 @@
  (depends
   (ocaml (>= 5.1))
   (dune (>= 3.0))
+  (conf-pam :build)
   (menhir (>= 20230608))
   (eio (>= 1.0))
   (eio_main (>= 1.0))
