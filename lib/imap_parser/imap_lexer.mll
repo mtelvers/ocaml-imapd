@@ -48,6 +48,7 @@ let () =
       ("APPEND", APPEND);
       ("IDLE", IDLE);
       (* Selected state commands *)
+      ("CHECK", CHECK);
       ("CLOSE", CLOSE);
       ("UNSELECT", UNSELECT);
       ("EXPUNGE", EXPUNGE);

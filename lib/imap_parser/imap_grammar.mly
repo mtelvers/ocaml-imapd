@@ -37,7 +37,7 @@ open Imap_types
 %token SUBSCRIBE UNSUBSCRIBE LIST LSUB NAMESPACE STATUS APPEND IDLE
 
 (* Commands - Selected *)
-%token CLOSE UNSELECT EXPUNGE SEARCH FETCH STORE COPY MOVE UID
+%token CHECK CLOSE UNSELECT EXPUNGE SEARCH FETCH STORE COPY MOVE UID
 
 (* Fetch attributes *)
 %token ENVELOPE FLAGS INTERNALDATE RFC822 BODY BODYSTRUCTURE BINARY
@@ -496,6 +496,7 @@ append_message:
 
 (* command-select - selected state commands *)
 command_select:
+  | CHECK { Noop }  (* CHECK is a no-op in modern IMAP - requests mailbox checkpoint *)
   | CLOSE { Close }
   | UNSELECT { Unselect }
   | EXPUNGE { Expunge }
