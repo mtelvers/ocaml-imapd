@@ -929,7 +929,9 @@ module Make
   let handle_idle t flow tag read_line_fn ~clock state =
     match state with
     | Selected { username; mailbox; _ } ->
+      Eio.traceln "IDLE: entering IDLE mode for mailbox %s" mailbox;
       send_response flow (Continuation (Some "idling"));
+      Eio.traceln "IDLE: sent continuation, waiting for DONE";
 
       (* Get initial message count *)
       let get_message_count () =
@@ -938,6 +940,7 @@ module Make
         | Error _ -> 0
       in
       let last_count = ref (get_message_count ()) in
+      Eio.traceln "IDLE: initial message count = %d" !last_count;
 
       (* Poll interval in seconds *)
       let poll_interval = 2.0 in
@@ -970,20 +973,28 @@ module Make
               in
               let line = read_char () in
               let trimmed = String.trim (String.uppercase_ascii line) in
-              if trimmed = "DONE" then
+              Eio.traceln "IDLE: read line: %s" (String.trim line);
+              if trimmed = "DONE" then begin
+                Eio.traceln "IDLE: received DONE";
                 `Done
-              else
+              end else begin
+                Eio.traceln "IDLE: ignoring non-DONE input";
                 read_loop ()  (* Ignore other input, keep reading *)
+              end
             in
             read_loop ()
-          with End_of_file -> `Closed)
+          with End_of_file ->
+            Eio.traceln "IDLE: connection closed (EOF)";
+            `Closed)
         (* Poll fiber - checks for new messages every poll_interval *)
         (fun () ->
           let rec poll_loop () =
             Eio.Time.sleep clock poll_interval;
             let current_count = get_message_count () in
+            Eio.traceln "IDLE: polling, last=%d current=%d" !last_count current_count;
             if current_count > !last_count then begin
               let new_messages = current_count - !last_count in
+              Eio.traceln "IDLE: new messages detected! sending EXISTS %d, RECENT %d" current_count new_messages;
               send_response flow (Exists current_count);
               send_response flow (Recent new_messages);
               last_count := current_count
@@ -996,8 +1007,10 @@ module Make
       (* Handle the result *)
       (match result with
        | `Done ->
+         Eio.traceln "IDLE: terminating normally";
          send_response flow (Ok { tag = Some tag; code = None; text = "IDLE terminated" })
-       | `Closed -> ());
+       | `Closed ->
+         Eio.traceln "IDLE: terminating due to connection close");
       state
     | Authenticated _ ->
       (* IDLE in authenticated state - just wait for DONE *)
