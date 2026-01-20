@@ -946,13 +946,18 @@ module Make
       let input_buf = Buffer.create 64 in
       let cs = Cstruct.create 1 in
 
-      (* Main IDLE loop using Switch.run for fresh cancellation context *)
-      let rec idle_loop () =
-        Eio.traceln "IDLE: entering loop iteration";
-        let read_result =
+      (* Use Fiber.first with two separate fibers:
+         1. Read fiber - blocks until "DONE" is received
+         2. Poll fiber - periodically checks for new messages *)
+      Eio.traceln "IDLE: starting with initial count %d" !last_count;
+
+      let read_done = ref false in
+
+      let result = Eio.Fiber.first
+        (* Read fiber - waits for DONE command *)
+        (fun () ->
           try
-            Eio.Switch.run @@ fun _sw ->
-            try
+            let rec read_loop () =
               let rec read_char () : string =
                 let n = Eio.Flow.single_read flow cs in
                 if n > 0 then begin
@@ -967,40 +972,40 @@ module Make
                 end else
                   read_char ()
               in
-              `Line (Eio.Time.with_timeout_exn clock poll_interval read_char)
-            with
-            | Eio.Time.Timeout -> `Timeout
-            | End_of_file -> `Closed
-          with
-          | Eio.Cancel.Cancelled _ as e ->
-            Eio.traceln "IDLE: switch cancelled - %s" (Printexc.to_string e);
-            `Timeout
-        in
-        match read_result with
-        | `Line line ->
-          Eio.traceln "IDLE: received line: %s" (String.trim line);
-          let trimmed = String.trim (String.uppercase_ascii line) in
-          if trimmed = "DONE" then
-            send_response flow (Ok { tag = Some tag; code = None; text = "IDLE terminated" })
-          else
-            idle_loop ()  (* Ignore other input, keep idling *)
-        | `Closed ->
-          Eio.traceln "IDLE: connection closed";
-          ()  (* Exit IDLE *)
-        | `Timeout ->
-          (* Timeout occurred - check for mailbox changes *)
-          let current_count = get_message_count () in
-          Eio.traceln "IDLE: polling, last=%d current=%d" !last_count current_count;
-          if current_count > !last_count then begin
-            (* New messages arrived - send EXISTS update *)
-            Eio.traceln "IDLE: sending EXISTS %d" current_count;
-            send_response flow (Exists current_count);
-            last_count := current_count
-          end;
-          idle_loop ()
+              let line = read_char () in
+              Eio.traceln "IDLE: received line: %s" (String.trim line);
+              let trimmed = String.trim (String.uppercase_ascii line) in
+              if trimmed = "DONE" then begin
+                read_done := true;
+                `Done
+              end else
+                read_loop ()  (* Ignore other input, keep reading *)
+            in
+            read_loop ()
+          with End_of_file ->
+            Eio.traceln "IDLE: connection closed";
+            `Closed)
+        (* Poll fiber - checks for new messages every poll_interval *)
+        (fun () ->
+          let rec poll_loop () =
+            Eio.Time.sleep clock poll_interval;
+            let current_count = get_message_count () in
+            Eio.traceln "IDLE: polling, last=%d current=%d" !last_count current_count;
+            if current_count > !last_count then begin
+              Eio.traceln "IDLE: sending EXISTS %d" current_count;
+              send_response flow (Exists current_count);
+              last_count := current_count
+            end;
+            poll_loop ()
+          in
+          poll_loop ())
       in
-      Eio.traceln "IDLE: starting with initial count %d" !last_count;
-      idle_loop ();
+
+      (* Handle the result *)
+      (match result with
+       | `Done ->
+         send_response flow (Ok { tag = Some tag; code = None; text = "IDLE terminated" })
+       | `Closed -> ());
       state
     | Authenticated _ ->
       (* IDLE in authenticated state - just wait for DONE *)
