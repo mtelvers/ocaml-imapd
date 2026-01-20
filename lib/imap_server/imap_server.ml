@@ -946,12 +946,13 @@ module Make
       let input_buf = Buffer.create 64 in
       let cs = Cstruct.create 1 in
 
-      (* Try to read available data with timeout *)
-      let try_read_line () =
-        let result = ref None in
-        begin
-          try
-            Eio.Time.with_timeout_exn clock poll_interval (fun () ->
+      (* Main IDLE loop using Fiber.first to race read vs sleep *)
+      let rec idle_loop () =
+        (* Race between reading a line and sleeping *)
+        let read_result = Eio.Fiber.first
+          (fun () ->
+            (* Try to read a complete line *)
+            try
               let rec read_char () =
                 let n = Eio.Flow.single_read flow cs in
                 if n > 0 then begin
@@ -960,35 +961,32 @@ module Make
                   if c = '\n' then begin
                     let line = Buffer.contents input_buf in
                     Buffer.clear input_buf;
-                    result := Some line
+                    `Line line
                   end else
                     read_char ()
-                end
+                end else
+                  read_char ()  (* Keep trying *)
               in
               read_char ()
-            )
-          with
-          | Eio.Time.Timeout -> ()  (* Normal timeout, continue polling *)
-          | End_of_file -> ()
-          | exn ->
-            (* Log unexpected exceptions but don't crash *)
-            Eio.traceln "IDLE: exception in read: %s" (Printexc.to_string exn)
-        end;
-        !result
-      in
-
-      (* Main IDLE loop *)
-      let rec idle_loop () =
-        (* Check for input from client *)
-        match try_read_line () with
-        | Some line ->
+            with
+            | End_of_file -> `Closed
+            | Eio.Cancel.Cancelled _ -> `Timeout)
+          (fun () ->
+            Eio.Time.sleep clock poll_interval;
+            `Timeout)
+        in
+        match read_result with
+        | `Line line ->
           Eio.traceln "IDLE: received line: %s" (String.trim line);
           let trimmed = String.trim (String.uppercase_ascii line) in
           if trimmed = "DONE" then
             send_response flow (Ok { tag = Some tag; code = None; text = "IDLE terminated" })
           else
             idle_loop ()  (* Ignore other input, keep idling *)
-        | None ->
+        | `Closed ->
+          Eio.traceln "IDLE: connection closed";
+          ()  (* Exit IDLE *)
+        | `Timeout ->
           (* Timeout occurred - check for mailbox changes *)
           let current_count = get_message_count () in
           Eio.traceln "IDLE: polling, last=%d current=%d" !last_count current_count;
