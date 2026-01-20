@@ -499,14 +499,15 @@ module Make
       state
 
   (* Process STORE command *)
-  let handle_store t flow tag ~sequence ~silent ~action ~flags state =
+  let handle_store t flow tag ~sequence ~silent ~action ~flags ?(use_uid=false) state =
     match state with
     | Selected { username; mailbox; readonly } ->
       if readonly then begin
         send_response flow (No { tag = Some tag; code = None; text = "Mailbox is read-only" });
         state
       end else begin
-        match Storage.store_flags t.storage ~username ~mailbox ~sequence ~action ~flags with
+        let store_fn = if use_uid then Storage.store_by_uid ~uids:sequence else Storage.store_flags ~sequence in
+        match store_fn t.storage ~username ~mailbox ~action ~flags with
         | Error _ ->
           send_response flow (No { tag = Some tag; code = None; text = "STORE failed" });
           state
@@ -1005,7 +1006,7 @@ module Make
       (* For UID FETCH, sequence is UIDs not sequence numbers *)
       handle_fetch t flow tag ~sequence ~items ~use_uid:true state
     | Uid_store { sequence; silent; action; flags } ->
-      handle_store t flow tag ~sequence ~silent ~action ~flags state
+      handle_store t flow tag ~sequence ~silent ~action ~flags ~use_uid:true state
     | Uid_copy { sequence; mailbox } ->
       handle_copy t flow tag ~sequence ~mailbox state
     | Uid_move { sequence; mailbox } ->

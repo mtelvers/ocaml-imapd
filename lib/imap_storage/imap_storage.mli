@@ -122,8 +122,18 @@ module type STORAGE = sig
     action:store_action ->
     flags:flag list ->
     (message list, error) result
-  (** Store flags on messages.
+  (** Store flags on messages by sequence number.
       See {{:https://datatracker.ietf.org/doc/html/rfc9051#section-6.4.6}RFC 9051 Section 6.4.6}. *)
+
+  val store_by_uid :
+    t ->
+    username:string ->
+    mailbox:mailbox_name ->
+    uids:sequence_set ->
+    action:store_action ->
+    flags:flag list ->
+    (message list, error) result
+  (** Store flags on messages by UID. *)
 
   val expunge :
     t ->

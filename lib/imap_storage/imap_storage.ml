@@ -46,6 +46,7 @@ module type STORAGE = sig
   val fetch_messages : t -> username:string -> mailbox:mailbox_name -> sequence:sequence_set -> items:fetch_item list -> (message list, error) result
   val fetch_by_uid : t -> username:string -> mailbox:mailbox_name -> uids:sequence_set -> items:fetch_item list -> (message list, error) result
   val store_flags : t -> username:string -> mailbox:mailbox_name -> sequence:sequence_set -> action:store_action -> flags:flag list -> (message list, error) result
+  val store_by_uid : t -> username:string -> mailbox:mailbox_name -> uids:sequence_set -> action:store_action -> flags:flag list -> (message list, error) result
   val expunge : t -> username:string -> mailbox:mailbox_name -> (uid list, error) result
   val append : t -> username:string -> mailbox:mailbox_name -> flags:flag list -> date:string option -> message:string -> (uid, error) result
   val copy : t -> username:string -> src_mailbox:mailbox_name -> sequence:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
@@ -294,6 +295,30 @@ module Memory_storage = struct
       let results = List.filteri (fun i _ ->
         seq_matches sequence (i + 1) max_seq
       ) updated in
+      Result.Ok results
+
+  let store_by_uid t ~username ~mailbox ~uids ~action ~flags =
+    let mailbox = normalize_mailbox_name mailbox in
+    let user = get_user t ~username in
+    match Hashtbl.find_opt user.mailboxes mailbox with
+    | None -> Result.Error Mailbox_not_found
+    | Some mb ->
+      let uid_matches uid =
+        List.exists (fun range ->
+          match range with
+          | Single n -> Int32.to_int uid = n
+          | Range (a, b) -> Int32.to_int uid >= a && Int32.to_int uid <= b
+          | From n -> Int32.to_int uid >= n
+          | All -> true
+        ) uids
+      in
+      let updated = List.map (fun (m : message) ->
+        if uid_matches m.uid then
+          { m with flags = apply_flags_action action m.flags flags }
+        else m
+      ) mb.messages in
+      mb.messages <- updated;
+      let results = List.filter (fun (m : message) -> uid_matches m.uid) updated in
       Result.Ok results
 
   let expunge t ~username ~mailbox =
@@ -961,6 +986,61 @@ module Maildir_storage = struct
           Some {
             uid;
             seq;
+            flags = new_flags;
+            internal_date = get_internal_date new_filepath;
+            size;
+            envelope = None;
+            body_structure = None;
+            raw_headers = None;
+            raw_body = None;
+          }
+        end else None
+      ) messages in
+      save_uid_map path map;
+      Result.Ok (List.filter_map Fun.id results)
+    end
+
+  let store_by_uid t ~username ~mailbox ~uids ~action ~flags =
+    let mailbox = normalize_mailbox_name mailbox in
+    let path = mailbox_path t ~username ~mailbox in
+    if not (Sys.file_exists path) then
+      Result.Error Mailbox_not_found
+    else begin
+      let messages = list_messages path in
+      let map = load_uid_map path in
+      let uid_matches uid =
+        List.exists (fun range ->
+          match range with
+          | Single n -> Int32.to_int uid = n
+          | Range (a, b) -> Int32.to_int uid >= a && Int32.to_int uid <= b
+          | From n -> Int32.to_int uid >= n
+          | All -> true
+        ) uids
+      in
+      let results = List.mapi (fun i (filepath, filename, _in_new) ->
+        let uid = get_or_assign_uid map filename in
+        if uid_matches uid then begin
+          let base, old_flags = parse_filename filename in
+          let new_flags = Memory_storage.apply_flags_action action old_flags flags in
+          (* Rename file with new flags *)
+          let new_filename = build_filename base new_flags in
+          let dir = Filename.dirname filepath in
+          (* Move to cur/ if in new/ *)
+          let new_dir = if ends_with ~suffix:"/new" dir then
+            String.sub dir 0 (String.length dir - 4) ^ "/cur"
+          else dir in
+          let new_filepath = Filename.concat new_dir new_filename in
+          (try
+            if filepath <> new_filepath then
+              Sys.rename filepath new_filepath
+          with _ -> ());
+          let size = try
+            let stats = Unix.stat new_filepath in
+            Int64.of_int stats.Unix.st_size
+          with _ -> 0L in
+          Some {
+            uid;
+            seq = i + 1;
             flags = new_flags;
             internal_date = get_internal_date new_filepath;
             size;
