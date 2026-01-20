@@ -49,6 +49,7 @@ let run_with_memory_single ~port ~host ~tls_config ~implicit_tls =
   let module Server = Imap_server.Make(Imap_storage.Memory_storage)(Imap_auth.Pam_auth) in
   Eio_main.run @@ fun env ->
   let net = Eio.Stdenv.net env in
+  let clock = Eio.Stdenv.clock env in
   let storage = Imap_storage.Memory_storage.create () in
   let auth = Imap_auth.Pam_auth.create ~service_name:"imapd" in
 
@@ -70,16 +71,17 @@ let run_with_memory_single ~port ~host ~tls_config ~implicit_tls =
   let addr = `Tcp (ipaddr, port) in
   if implicit_tls then
     match tls_config with
-    | Some tls -> Server.run_tls server ~sw ~net ~addr ~tls_config:tls ()
+    | Some tls -> Server.run_tls server ~sw ~net ~addr ~tls_config:tls ~clock ()
     | None -> failwith "TLS config required for implicit TLS"
   else
-    Server.run server ~sw ~net ~addr ()
+    Server.run server ~sw ~net ~addr ~clock ()
 
 (* Run the server with Maildir storage - single process mode *)
 let run_with_maildir_single ~port ~host ~tls_config ~maildir_path ~implicit_tls =
   let module Server = Imap_server.Make(Imap_storage.Maildir_storage)(Imap_auth.Pam_auth) in
   Eio_main.run @@ fun env ->
   let net = Eio.Stdenv.net env in
+  let clock = Eio.Stdenv.clock env in
   let storage = Imap_storage.Maildir_storage.create_with_path ~base_path:maildir_path in
   let auth = Imap_auth.Pam_auth.create ~service_name:"imapd" in
 
@@ -98,10 +100,10 @@ let run_with_maildir_single ~port ~host ~tls_config ~maildir_path ~implicit_tls 
   let addr = `Tcp (ipaddr, port) in
   if implicit_tls then
     match tls_config with
-    | Some tls -> Server.run_tls server ~sw ~net ~addr ~tls_config:tls ()
+    | Some tls -> Server.run_tls server ~sw ~net ~addr ~tls_config:tls ~clock ()
     | None -> failwith "TLS config required for implicit TLS"
   else
-    Server.run server ~sw ~net ~addr ()
+    Server.run server ~sw ~net ~addr ~clock ()
 
 (* Run the server with Maildir storage - forked mode with per-user privileges *)
 let run_with_maildir_forked ~port ~host ~tls_config ~maildir_path =
@@ -126,12 +128,13 @@ let run_with_maildir_forked ~port ~host ~tls_config ~maildir_path =
   let tls_mode = if tls_config <> None then " (implicit TLS)" else "" in
   Printf.eprintf "+IMAP server starting on %s:%d (%s, fork-per-connection)%s\n%!" host port storage_desc tls_mode;
 
-  (* run_forked uses its own accept loop, not EIO's *)
-  Eio_main.run @@ fun _env ->
+  (* run_forked uses its own accept loop, not EIO's.
+     Each child process gets its own clock from its Eio environment. *)
+  Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let ipaddr = parse_ipaddr host in
   let addr = `Tcp (ipaddr, port) in
-  let net = Eio.Stdenv.net _env in
+  let net = Eio.Stdenv.net env in
   Server.run_forked server ~sw ~net ~addr ~tls_config
 
 (* Main entry point *)

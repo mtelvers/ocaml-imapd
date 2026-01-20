@@ -924,12 +924,85 @@ module Make
       });
       state
 
-  (* Process IDLE command - RFC 2177 *)
-  let handle_idle flow tag read_line_fn state =
+  (* Process IDLE command - RFC 2177
+     Polls mailbox for changes every 2 seconds and sends EXISTS/RECENT updates *)
+  let handle_idle t flow tag read_line_fn ~clock state =
     match state with
-    | Authenticated _ | Selected _ ->
+    | Selected { username; mailbox; _ } ->
       send_response flow (Continuation (Some "idling"));
-      (* Wait for DONE from client *)
+
+      (* Get initial message count *)
+      let get_message_count () =
+        match Storage.select_mailbox t.storage ~username mailbox ~readonly:true with
+        | Ok mb_state -> mb_state.exists
+        | Error _ -> 0
+      in
+      let last_count = ref (get_message_count ()) in
+
+      (* Poll interval in seconds *)
+      let poll_interval = 2.0 in
+
+      (* Buffer for reading input *)
+      let input_buf = Buffer.create 64 in
+      let cs = Cstruct.create 1 in
+
+      (* Try to read available data with timeout *)
+      let try_read_line () =
+        let result = ref None in
+        let read_complete = ref false in
+        begin
+          match Eio.Time.with_timeout clock poll_interval (fun () ->
+            let rec read_char () =
+              if !read_complete then ()
+              else begin
+                let n = Eio.Flow.single_read flow cs in
+                if n > 0 then begin
+                  let c = Cstruct.get_char cs 0 in
+                  Buffer.add_char input_buf c;
+                  if c = '\n' then begin
+                    let line = Buffer.contents input_buf in
+                    Buffer.clear input_buf;
+                    result := Some line;
+                    read_complete := true
+                  end else
+                    read_char ()
+                end
+              end
+            in
+            try read_char (); Ok ()
+            with End_of_file -> read_complete := true; Ok ()
+          ) with
+          | Ok () -> ()
+          | Error `Timeout -> ()
+        end;
+        !result
+      in
+
+      (* Main IDLE loop *)
+      let rec idle_loop () =
+        (* Check for input from client *)
+        match try_read_line () with
+        | Some line ->
+          let trimmed = String.trim (String.uppercase_ascii line) in
+          if trimmed = "DONE" then
+            send_response flow (Ok { tag = Some tag; code = None; text = "IDLE terminated" })
+          else
+            idle_loop ()  (* Ignore other input, keep idling *)
+        | None ->
+          (* Timeout occurred - check for mailbox changes *)
+          let current_count = get_message_count () in
+          if current_count > !last_count then begin
+            (* New messages arrived - send EXISTS update *)
+            send_response flow (Exists current_count);
+            last_count := current_count
+          end;
+          idle_loop ()
+      in
+      idle_loop ();
+      state
+    | Authenticated _ ->
+      (* IDLE in authenticated state - just wait for DONE *)
+      send_response flow (Continuation (Some "idling"));
       let rec wait_for_done () =
         match read_line_fn () with
         | None -> ()  (* Connection closed *)
@@ -951,7 +1024,7 @@ module Make
       state
 
   (* Main command dispatcher *)
-  let rec handle_command t flow ~read_line_fn ~tls_active cmd state =
+  let rec handle_command t flow ~read_line_fn ~tls_active ~clock cmd state =
     let tag = cmd.tag in
     match cmd.command with
     | Capability -> handle_capability t flow tag ~tls_active; (state, Continue)
@@ -979,7 +1052,7 @@ module Make
     | Enable caps -> (handle_enable flow tag ~capabilities:caps state, Continue)
     | Subscribe mailbox -> (handle_subscribe flow tag mailbox state, Continue)
     | Unsubscribe mailbox -> (handle_unsubscribe flow tag mailbox state, Continue)
-    | Idle -> (handle_idle flow tag read_line_fn state, Continue)
+    | Idle -> (handle_idle t flow tag read_line_fn ~clock state, Continue)
     | Uid uid_cmd -> (handle_uid_command t flow tag ~read_line_fn uid_cmd state, Continue)
     | Starttls ->
       (match t.config.tls_config with
@@ -1049,7 +1122,7 @@ module Make
     loop ()
 
   (* Main command loop - returns when connection should close or upgrade TLS *)
-  let rec command_loop t flow state tls_active =
+  let rec command_loop t flow state ~tls_active ~clock =
     let read_line_fn () = read_line flow in
     match state with
     | Logout -> `Done
@@ -1067,22 +1140,22 @@ module Make
             code = None;
             text = "Invalid command syntax"
           });
-          command_loop t flow state tls_active
+          command_loop t flow state ~tls_active ~clock
         | Result.Ok cmd ->
-          let (new_state, action) = handle_command t flow ~read_line_fn ~tls_active cmd state in
+          let (new_state, action) = handle_command t flow ~read_line_fn ~tls_active ~clock cmd state in
           match action with
-          | Continue -> command_loop t flow new_state tls_active
+          | Continue -> command_loop t flow new_state ~tls_active ~clock
           | Upgrade_tls tag -> `Upgrade_tls (tag, new_state)
 
   (* Internal connection handler with TLS state *)
-  let handle_connection_internal t (flow : _ Eio.Flow.two_way) ~tls_active ~send_greeting:should_greet ~initial_state =
+  let handle_connection_internal t (flow : _ Eio.Flow.two_way) ~tls_active ~send_greeting:should_greet ~initial_state ~clock =
     (* Send greeting only for new connections *)
     if should_greet then send_greeting t flow ~tls_active;
-    command_loop t flow initial_state tls_active
+    command_loop t flow initial_state ~tls_active ~clock
 
   (* Connection handler for cleartext connections (may upgrade to TLS) *)
-  let handle_connection t flow _addr =
-    match handle_connection_internal t flow ~tls_active:false ~send_greeting:true ~initial_state:Not_authenticated with
+  let handle_connection t flow _addr ~clock =
+    match handle_connection_internal t flow ~tls_active:false ~send_greeting:true ~initial_state:Not_authenticated ~clock with
     | `Done -> ()
     | `Upgrade_tls (tag, state) ->
       (* Upgrade to TLS *)
@@ -1096,26 +1169,26 @@ module Make
         let tls_flow = Tls_eio.server_of_flow tls_config flow in
         (* Continue with TLS-wrapped flow, preserving state (which is Not_authenticated after STARTTLS) *)
         (* Per RFC 3501, STARTTLS does not send a new greeting, session continues *)
-        ignore (handle_connection_internal t (tls_flow :> _ Eio.Flow.two_way) ~tls_active:true ~send_greeting:false ~initial_state:state)
+        ignore (handle_connection_internal t (tls_flow :> _ Eio.Flow.two_way) ~tls_active:true ~send_greeting:false ~initial_state:state ~clock)
 
   (* Connection handler for already-TLS connections (implicit TLS on port 993) *)
-  let handle_connection_tls t tls_flow _addr =
-    ignore (handle_connection_internal t (tls_flow :> _ Eio.Flow.two_way) ~tls_active:true ~send_greeting:true ~initial_state:Not_authenticated)
+  let handle_connection_tls t tls_flow _addr ~clock =
+    ignore (handle_connection_internal t (tls_flow :> _ Eio.Flow.two_way) ~tls_active:true ~send_greeting:true ~initial_state:Not_authenticated ~clock)
 
   (* Run server on cleartext port - single process mode (no privilege separation) *)
-  let run t ~sw ~net ~addr ?(after_bind = fun () -> ()) () =
+  let run t ~sw ~net ~addr ~clock ?(after_bind = fun () -> ()) () =
     let socket = Eio.Net.listen net ~sw ~reuse_addr:true ~backlog:128 addr in
     after_bind ();
     let rec accept_loop () =
       Eio.Net.accept_fork socket ~sw
         ~on_error:(fun exn -> Eio.traceln "Connection error: %a" Fmt.exn exn)
-        (fun flow addr -> handle_connection t flow addr);
+        (fun flow addr -> handle_connection t flow addr ~clock);
       accept_loop ()
     in
     accept_loop ()
 
   (* Run server on TLS port - single process mode (no privilege separation) *)
-  let run_tls t ~sw ~net ~addr ~tls_config ?(after_bind = fun () -> ()) () =
+  let run_tls t ~sw ~net ~addr ~tls_config ~clock ?(after_bind = fun () -> ()) () =
     let socket = Eio.Net.listen net ~sw ~reuse_addr:true ~backlog:128 addr in
     after_bind ();
     let rec accept_loop () =
@@ -1123,7 +1196,7 @@ module Make
         ~on_error:(fun exn -> Eio.traceln "Connection error: %a" Fmt.exn exn)
         (fun flow addr ->
            let tls_flow = Tls_eio.server_of_flow tls_config flow in
-           handle_connection_tls t tls_flow addr);
+           handle_connection_tls t tls_flow addr ~clock);
       accept_loop ()
     in
     accept_loop ()
@@ -1144,7 +1217,7 @@ module Make
 
   (* Fork-based connection handler for privilege separation.
      Each connection runs in its own process as the authenticated user. *)
-  let handle_connection_forked t flow _addr ~tls_active =
+  let handle_connection_forked t flow _addr ~tls_active ~clock =
     send_greeting t flow ~tls_active;
     (* Authentication loop - runs as root *)
     let rec auth_loop () =
@@ -1179,7 +1252,7 @@ module Make
                 });
                 (* Continue session as authenticated user *)
                 let state = Authenticated { username } in
-                ignore (command_loop t flow state tls_active)
+                ignore (command_loop t flow state ~tls_active ~clock)
               end else begin
                 (* Failed to drop privileges *)
                 send_response flow (No {
@@ -1263,15 +1336,16 @@ module Make
         (* Child process *)
         Unix.close sock;  (* Close listening socket in child *)
         (* Run EIO for this connection *)
-        Eio_main.run @@ fun _env ->
+        Eio_main.run @@ fun env ->
+        let clock = Eio.Stdenv.clock env in
         Eio.Switch.run @@ fun sw ->
         let flow = Eio_unix.Net.import_socket_stream ~sw ~close_unix:true client_sock in
         (match tls_config with
          | None ->
-           handle_connection_forked t flow () ~tls_active:false
+           handle_connection_forked t flow () ~tls_active:false ~clock
          | Some tls_cfg ->
            let tls_flow = Tls_eio.server_of_flow tls_cfg flow in
-           handle_connection_forked t (tls_flow :> _ Eio.Flow.two_way) () ~tls_active:true);
+           handle_connection_forked t (tls_flow :> _ Eio.Flow.two_way) () ~tls_active:true ~clock);
         exit 0
       | _pid ->
         (* Parent process *)

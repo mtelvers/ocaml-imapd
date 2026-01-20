@@ -52,6 +52,7 @@ module Make
     t ->
     [> `Close | `Flow | `R | `Shutdown | `W ] Eio.Resource.t ->
     _ ->
+    clock:_ Eio.Time.clock ->
     unit
   (** Handle a single client connection.
 
@@ -68,6 +69,7 @@ module Make
     sw:Eio.Switch.t ->
     net:'a Eio.Net.t ->
     addr:Eio.Net.Sockaddr.stream ->
+    clock:_ Eio.Time.clock ->
     ?after_bind:(unit -> unit) ->
     unit ->
     unit
@@ -84,6 +86,7 @@ module Make
     net:'a Eio.Net.t ->
     addr:Eio.Net.Sockaddr.stream ->
     tls_config:Tls.Config.server ->
+    clock:_ Eio.Time.clock ->
     ?after_bind:(unit -> unit) ->
     unit ->
     unit
