@@ -424,7 +424,7 @@ module Make
                    Some (String.sub full_data offset len)
                in
                Some (Fetch_item_body_section { section = Some Section_text; origin = Some offset; data })
-             | Fetch_body_section (s, _) | Fetch_body_peek (s, _) ->
+             | Fetch_body_section (s, partial) | Fetch_body_peek (s, partial) ->
                (* Handle section specifiers *)
                (match parse_header_fields_section s with
                 | Some field_names ->
@@ -436,14 +436,45 @@ module Make
                     data
                   })
                 | None ->
-                  (* Other section types - return full message for now *)
-                  let data = match msg.raw_headers, msg.raw_body with
-                    | Some h, Some b -> Some (h ^ "\r\n\r\n" ^ b)
-                    | Some h, None -> Some (h ^ "\r\n")
-                    | None, Some b -> Some b
-                    | None, None -> None
+                  (* Check if it's a numeric section like "1", "2", "1.2.3" *)
+                  let is_numeric_section =
+                    s <> "" &&
+                    String.for_all (fun c -> c >= '0' && c <= '9' || c = '.') s
                   in
-                  Some (Fetch_item_body_section { section = None; origin = None; data }))
+                  if is_numeric_section then begin
+                    (* Extract specific MIME part *)
+                    let full_message = match msg.raw_headers, msg.raw_body with
+                      | Some h, Some b -> h ^ "\r\n\r\n" ^ b
+                      | Some h, None -> h ^ "\r\n"
+                      | None, Some b -> b
+                      | None, None -> ""
+                    in
+                    let part_data = Imap_envelope.extract_mime_part full_message s in
+                    let data, origin = match partial, part_data with
+                      | None, d -> (d, None)
+                      | Some (offset, count), Some full_data ->
+                        if offset >= String.length full_data then (Some "", Some offset)
+                        else
+                          let available = String.length full_data - offset in
+                          let len = min count available in
+                          (Some (String.sub full_data offset len), Some offset)
+                      | Some (offset, _), None -> (None, Some offset)
+                    in
+                    Some (Fetch_item_body_section {
+                      section = Some (Section_part (String.split_on_char '.' s |> List.filter_map int_of_string_opt, None));
+                      origin;
+                      data
+                    })
+                  end else begin
+                    (* Other section types - return full message *)
+                    let data = match msg.raw_headers, msg.raw_body with
+                      | Some h, Some b -> Some (h ^ "\r\n\r\n" ^ b)
+                      | Some h, None -> Some (h ^ "\r\n")
+                      | None, Some b -> Some b
+                      | None, None -> None
+                    in
+                    Some (Fetch_item_body_section { section = None; origin = None; data })
+                  end)
              | Fetch_binary _ | Fetch_binary_peek _ | Fetch_binary_size _ ->
                (* Binary not implemented yet *)
                None

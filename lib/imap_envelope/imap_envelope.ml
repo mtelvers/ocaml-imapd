@@ -416,3 +416,59 @@ let rec parse_body_structure_from_parts headers_str body =
 let parse_body_structure raw_message =
   let headers_str, body = split_headers_body raw_message in
   parse_body_structure_from_parts headers_str body
+
+(** {1 MIME Part Extraction} *)
+
+(** Extract a specific MIME part by section number.
+    Section numbers are like "1", "2", "1.1", "2.3.1" for nested parts.
+    Returns the body content of that part (without headers). *)
+let rec extract_mime_part_from_body headers_str body section_parts =
+  let headers = parse_header_lines headers_str in
+  let content_type = match get_header headers "content-type" with
+    | Some ct -> ct
+    | None -> "text/plain"
+  in
+  let (media_type, _media_subtype, ct_params) = parse_content_type content_type in
+
+  match section_parts with
+  | [] ->
+    (* No more section parts - return this part's body *)
+    Some body
+  | part_num :: rest ->
+    if media_type = "multipart" then begin
+      match get_boundary ct_params with
+      | None -> None  (* Can't find parts without boundary *)
+      | Some boundary ->
+        let parts = split_multipart_body body boundary in
+        let idx = part_num - 1 in  (* Section numbers are 1-based *)
+        if idx >= 0 && idx < List.length parts then begin
+          let part = List.nth parts idx in
+          let part_headers, part_body = split_headers_body part in
+          extract_mime_part_from_body part_headers part_body rest
+        end else
+          None  (* Part number out of range *)
+    end else
+      None  (* Not multipart, can't have sub-parts *)
+
+(** Extract MIME part by section string like "1", "2", "1.2.3" *)
+let extract_mime_part raw_message section =
+  if section = "" then
+    (* Empty section = full message body *)
+    let _, body = split_headers_body raw_message in
+    Some body
+  else begin
+    (* Parse section into list of integers *)
+    let section_parts =
+      String.split_on_char '.' section
+      |> List.filter_map (fun s ->
+          match int_of_string_opt (String.trim s) with
+          | Some n when n > 0 -> Some n
+          | _ -> None)
+    in
+    if section_parts = [] then
+      None
+    else begin
+      let headers_str, body = split_headers_body raw_message in
+      extract_mime_part_from_body headers_str body section_parts
+    end
+  end

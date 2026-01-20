@@ -57,3 +57,10 @@ val parse_message : string -> string * string
 (** Parse raw message and extract MIME body structure.
     Handles multipart messages recursively. *)
 val parse_body_structure : string -> body_structure
+
+(** {1 MIME Part Extraction} *)
+
+(** Extract a specific MIME part by section string.
+    Section strings are like "1", "2", "1.2.3" for nested parts.
+    Returns the body content of that part (without headers). *)
+val extract_mime_part : string -> string -> string option
