@@ -948,27 +948,33 @@ module Make
 
       (* Main IDLE loop using Switch.run for fresh cancellation context *)
       let rec idle_loop () =
+        Eio.traceln "IDLE: entering loop iteration";
         let read_result =
-          Eio.Switch.run @@ fun _sw ->
           try
-            let rec read_char () : string =
-              let n = Eio.Flow.single_read flow cs in
-              if n > 0 then begin
-                let c = Cstruct.get_char cs 0 in
-                Buffer.add_char input_buf c;
-                if c = '\n' then begin
-                  let line = Buffer.contents input_buf in
-                  Buffer.clear input_buf;
-                  line
+            Eio.Switch.run @@ fun _sw ->
+            try
+              let rec read_char () : string =
+                let n = Eio.Flow.single_read flow cs in
+                if n > 0 then begin
+                  let c = Cstruct.get_char cs 0 in
+                  Buffer.add_char input_buf c;
+                  if c = '\n' then begin
+                    let line = Buffer.contents input_buf in
+                    Buffer.clear input_buf;
+                    line
+                  end else
+                    read_char ()
                 end else
                   read_char ()
-              end else
-                read_char ()
-            in
-            `Line (Eio.Time.with_timeout_exn clock poll_interval read_char)
+              in
+              `Line (Eio.Time.with_timeout_exn clock poll_interval read_char)
+            with
+            | Eio.Time.Timeout -> `Timeout
+            | End_of_file -> `Closed
           with
-          | Eio.Time.Timeout -> `Timeout
-          | End_of_file -> `Closed
+          | Eio.Cancel.Cancelled _ as e ->
+            Eio.traceln "IDLE: switch cancelled - %s" (Printexc.to_string e);
+            `Timeout
         in
         match read_result with
         | `Line line ->
