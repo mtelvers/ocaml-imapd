@@ -983,6 +983,7 @@ module Make
         (* Check for input from client *)
         match try_read_line () with
         | Some line ->
+          Eio.traceln "IDLE: received line: %s" (String.trim line);
           let trimmed = String.trim (String.uppercase_ascii line) in
           if trimmed = "DONE" then
             send_response flow (Ok { tag = Some tag; code = None; text = "IDLE terminated" })
@@ -991,13 +992,16 @@ module Make
         | None ->
           (* Timeout occurred - check for mailbox changes *)
           let current_count = get_message_count () in
+          Eio.traceln "IDLE: polling, last=%d current=%d" !last_count current_count;
           if current_count > !last_count then begin
             (* New messages arrived - send EXISTS update *)
+            Eio.traceln "IDLE: sending EXISTS %d" current_count;
             send_response flow (Exists current_count);
             last_count := current_count
           end;
           idle_loop ()
       in
+      Eio.traceln "IDLE: starting with initial count %d" !last_count;
       idle_loop ();
       state
     | Authenticated _ ->
