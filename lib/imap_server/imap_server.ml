@@ -972,6 +972,9 @@ module Make
           | Eio.Time.Timeout ->
             Eio.traceln "IDLE: timeout occurred";
             `Timeout
+          | Eio.Cancel.Cancelled _ ->
+            Eio.traceln "IDLE: cancelled (treating as timeout)";
+            `Timeout
           | End_of_file ->
             Eio.traceln "IDLE: end of file";
             `Closed
