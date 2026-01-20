@@ -600,8 +600,10 @@ let serialize_response f resp =
             | Some (Section_part _) -> () (* Nested part not supported *)
            )
         );
-        write_string f "] ";
-        (match origin with Some o -> write_string f ("<" ^ string_of_int o ^ "> ") | None -> ());
+        write_string f "]";
+        (match origin with
+         | Some o -> write_string f ("<" ^ string_of_int o ^ "> ")
+         | None -> write_string f " ");
         (match data with Some d -> write_literal f d | None -> write_string f "NIL")
       | Fetch_item_binary _ ->
         write_string f "BINARY NIL"
