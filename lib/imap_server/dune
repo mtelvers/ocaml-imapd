@@ -1,4 +1,4 @@
 (library
  (name imap_server)
  (public_name imapd.server)
- (libraries imap_types imap_parser imap_auth imap_storage eio eio_main eio.unix tls-eio cstruct))
+ (libraries imap_types imap_parser imap_auth imap_storage eio eio_main eio.unix tls-eio cstruct base64))

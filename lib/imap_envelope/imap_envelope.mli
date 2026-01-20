@@ -64,3 +64,13 @@ val parse_body_structure : string -> body_structure
     Section strings are like "1", "2", "1.2.3" for nested parts.
     Returns the body content of that part (without headers). *)
 val extract_mime_part : string -> string -> string option
+
+(** {1 Binary/Decoded MIME Part Extraction} *)
+
+(** Extract and decode a MIME part by section string.
+    Decodes Content-Transfer-Encoding (base64, quoted-printable).
+    Returns the decoded binary data. *)
+val extract_binary_part : string -> string -> string option
+
+(** Get the decoded size of a MIME part without extracting the full content. *)
+val get_binary_part_size : string -> string -> int64 option

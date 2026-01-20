@@ -464,7 +464,7 @@ command_auth:
   | SUBSCRIBE SP mb = mailbox { Subscribe mb }
   | UNSUBSCRIBE SP mb = mailbox { Unsubscribe mb }
   | LIST SP ref = astring SP pat = list_mailbox { List { reference = ref; pattern = pat } }
-  | LSUB SP ref = astring SP pat = list_mailbox { List { reference = ref; pattern = pat } }  (* LSUB treated as LIST *)
+  | LSUB SP ref = astring SP pat = list_mailbox { Lsub { reference = ref; pattern = pat } }
   | NAMESPACE { Namespace }
   | STATUS SP mb = mailbox SP LPAREN atts = status_att_list RPAREN { Status { mailbox = mb; items = atts } }
   | APPEND SP mb = mailbox SP fl = flag_list SP dt = date_time SP msg = append_message

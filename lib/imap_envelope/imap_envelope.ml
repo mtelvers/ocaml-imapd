@@ -472,3 +472,130 @@ let extract_mime_part raw_message section =
       extract_mime_part_from_body headers_str body section_parts
     end
   end
+
+(** {1 Binary/Decoded MIME Part Extraction} *)
+
+(** Decode quoted-printable encoded content. *)
+let decode_quoted_printable content =
+  let buf = Buffer.create (String.length content) in
+  let i = ref 0 in
+  let len = String.length content in
+  while !i < len do
+    let c = content.[!i] in
+    if c = '=' then begin
+      if !i + 2 < len then begin
+        let c1 = content.[!i + 1] in
+        let c2 = content.[!i + 2] in
+        if c1 = '\r' || c1 = '\n' then begin
+          (* Soft line break - skip =\r\n or =\n *)
+          i := !i + (if c1 = '\r' && c2 = '\n' then 3 else 2)
+        end else begin
+          (* Hex escape *)
+          let hex = String.make 2 c1 ^ String.make 1 c2 in
+          (try
+             let code = int_of_string ("0x" ^ hex) in
+             Buffer.add_char buf (Char.chr code);
+             i := !i + 3
+           with _ ->
+             Buffer.add_char buf c;
+             incr i)
+        end
+      end else begin
+        Buffer.add_char buf c;
+        incr i
+      end
+    end else begin
+      Buffer.add_char buf c;
+      incr i
+    end
+  done;
+  Buffer.contents buf
+
+(** Decode content based on Content-Transfer-Encoding. *)
+let decode_transfer_encoding encoding content =
+  match String.uppercase_ascii encoding with
+  | "BASE64" ->
+    (* Remove whitespace and decode *)
+    let clean = Str.global_replace (Str.regexp "[ \t\r\n]") "" content in
+    (match Base64.decode clean with
+     | Ok decoded -> Some decoded
+     | Error _ -> None)
+  | "QUOTED-PRINTABLE" ->
+    Some (decode_quoted_printable content)
+  | "7BIT" | "8BIT" | "BINARY" | "" ->
+    (* No decoding needed *)
+    Some content
+  | _ ->
+    (* Unknown encoding - return as-is *)
+    Some content
+
+(** Extract MIME part and get its Content-Transfer-Encoding.
+    Returns (content, encoding) if found. *)
+let rec extract_mime_part_with_encoding_from_body headers_str body section_parts =
+  let headers = parse_header_lines headers_str in
+  let content_type = match get_header headers "content-type" with
+    | Some ct -> ct
+    | None -> "text/plain"
+  in
+  let encoding = match get_header headers "content-transfer-encoding" with
+    | Some e -> String.trim e
+    | None -> "7BIT"
+  in
+  let (media_type, _media_subtype, ct_params) = parse_content_type content_type in
+
+  match section_parts with
+  | [] ->
+    (* No more section parts - return this part's body and encoding *)
+    Some (body, encoding)
+  | part_num :: rest ->
+    if media_type = "multipart" then begin
+      match get_boundary ct_params with
+      | None -> None  (* Can't find parts without boundary *)
+      | Some boundary ->
+        let parts = split_multipart_body body boundary in
+        let idx = part_num - 1 in  (* Section numbers are 1-based *)
+        if idx >= 0 && idx < List.length parts then begin
+          let part = List.nth parts idx in
+          let part_headers, part_body = split_headers_body part in
+          extract_mime_part_with_encoding_from_body part_headers part_body rest
+        end else
+          None  (* Part number out of range *)
+    end else
+      None  (* Not multipart, can't have sub-parts *)
+
+(** Extract and decode a MIME part by section string.
+    Decodes Content-Transfer-Encoding (base64, quoted-printable). *)
+let extract_binary_part raw_message section =
+  if section = "" then begin
+    (* Empty section = full message body, decode if needed *)
+    let headers_str, body = split_headers_body raw_message in
+    let headers = parse_header_lines headers_str in
+    let encoding = match get_header headers "content-transfer-encoding" with
+      | Some e -> String.trim e
+      | None -> "7BIT"
+    in
+    decode_transfer_encoding encoding body
+  end else begin
+    (* Parse section into list of integers *)
+    let section_parts =
+      String.split_on_char '.' section
+      |> List.filter_map (fun s ->
+          match int_of_string_opt (String.trim s) with
+          | Some n when n > 0 -> Some n
+          | _ -> None)
+    in
+    if section_parts = [] then
+      None
+    else begin
+      let headers_str, body = split_headers_body raw_message in
+      match extract_mime_part_with_encoding_from_body headers_str body section_parts with
+      | Some (content, encoding) -> decode_transfer_encoding encoding content
+      | None -> None
+    end
+  end
+
+(** Get the decoded size of a MIME part. *)
+let get_binary_part_size raw_message section =
+  match extract_binary_part raw_message section with
+  | Some data -> Some (Int64.of_int (String.length data))
+  | None -> None

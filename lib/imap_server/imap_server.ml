@@ -307,6 +307,41 @@ module Make
       send_response flow (Ok { tag = Some tag; code = None; text = "LIST completed" });
       state
 
+  (* Process LSUB command - list subscribed mailboxes only *)
+  let handle_lsub t flow tag ~reference ~pattern state =
+    let username = match state with
+      | Authenticated { username } -> Some username
+      | Selected { username; _ } -> Some username
+      | _ -> None
+    in
+    match username with
+    | None ->
+      send_response flow (Bad {
+        tag = Some tag;
+        code = None;
+        text = "Command not valid in this state"
+      });
+      state
+    | Some username ->
+      (* Get all mailboxes that match the pattern *)
+      let mailboxes = Storage.list_mailboxes t.storage ~username ~reference ~pattern in
+      (* Filter to only subscribed mailboxes *)
+      let subscribed = Storage.list_subscribed t.storage ~username in
+      let subscribed_set = List.map String.uppercase_ascii subscribed in
+      let is_subscribed name =
+        List.mem (String.uppercase_ascii name) subscribed_set
+      in
+      List.iter (fun (mb : Imap_storage.mailbox_info) ->
+        if is_subscribed mb.name then
+          send_response flow (List_response {
+            flags = List_subscribed :: mb.flags;
+            delimiter = mb.delimiter;
+            name = mb.name;
+          })
+      ) mailboxes;
+      send_response flow (Ok { tag = Some tag; code = None; text = "LSUB completed" });
+      state
+
   (* Process STATUS command *)
   let handle_status t flow tag mailbox ~items state =
     (* Security: Validate mailbox name *)
@@ -475,9 +510,45 @@ module Make
                     in
                     Some (Fetch_item_body_section { section = None; origin = None; data })
                   end)
-             | Fetch_binary _ | Fetch_binary_peek _ | Fetch_binary_size _ ->
-               (* Binary not implemented yet *)
-               None
+             | Fetch_binary (section, partial) | Fetch_binary_peek (section, partial) ->
+               (* BINARY fetch - return decoded MIME part *)
+               let full_message = match msg.raw_headers, msg.raw_body with
+                 | Some h, Some b -> h ^ "\r\n\r\n" ^ b
+                 | Some h, None -> h ^ "\r\n"
+                 | None, Some b -> b
+                 | None, None -> ""
+               in
+               let section_parts = String.split_on_char '.' section
+                 |> List.filter_map int_of_string_opt
+               in
+               (match Imap_envelope.extract_binary_part full_message section with
+                | Some decoded ->
+                  let data, _origin = match partial with
+                    | None -> (Some decoded, None)
+                    | Some (offset, count) ->
+                      if offset >= String.length decoded then (Some "", Some offset)
+                      else
+                        let available = String.length decoded - offset in
+                        let len = min count available in
+                        (Some (String.sub decoded offset len), Some offset)
+                  in
+                  Some (Fetch_item_binary { section = section_parts; data })
+                | None ->
+                  Some (Fetch_item_binary { section = section_parts; data = None }))
+             | Fetch_binary_size section ->
+               (* BINARY.SIZE - return size of decoded MIME part *)
+               let full_message = match msg.raw_headers, msg.raw_body with
+                 | Some h, Some b -> h ^ "\r\n\r\n" ^ b
+                 | Some h, None -> h ^ "\r\n"
+                 | None, Some b -> b
+                 | None, None -> ""
+               in
+               let section_parts = String.split_on_char '.' section
+                 |> List.filter_map int_of_string_opt
+               in
+               (match Imap_envelope.get_binary_part_size full_message section with
+                | Some size -> Some (Fetch_item_binary_size { section = section_parts; size })
+                | None -> Some (Fetch_item_binary_size { section = section_parts; size = 0L }))
            ) items in
            (* Always include UID in the response *)
            let fetch_items =
@@ -795,9 +866,15 @@ module Make
        | Result.Error _ ->
          send_response flow (No { tag = Some tag; code = None; text = "SEARCH failed" })
        | Result.Ok uids ->
-         (* Send ESEARCH response per RFC 9051 *)
+         (* Send ESEARCH response per RFC 9051 with MIN, MAX, COUNT, ALL *)
          let results = if List.length uids > 0 then
-           [Esearch_count (List.length uids); Esearch_all (List.map (fun uid -> Single (Int32.to_int uid)) uids)]
+           let uid_ints = List.map Int32.to_int uids in
+           let min_uid = List.fold_left min max_int uid_ints in
+           let max_uid = List.fold_left max min_int uid_ints in
+           [Esearch_min min_uid;
+            Esearch_max max_uid;
+            Esearch_count (List.length uids);
+            Esearch_all (List.map (fun uid -> Single (Int32.to_int uid)) uids)]
          else
            [Esearch_count 0]
          in
@@ -897,12 +974,21 @@ module Make
       });
       state
 
-  (* Process SUBSCRIBE/UNSUBSCRIBE - simplified, just succeed *)
-  let handle_subscribe flow tag _mailbox state =
+  (* Process SUBSCRIBE/UNSUBSCRIBE - persist to storage *)
+  let handle_subscribe t flow tag mailbox state =
     match state with
-    | Authenticated _ | Selected _ ->
-      send_response flow (Ok { tag = Some tag; code = None; text = "SUBSCRIBE completed" });
-      state
+    | Authenticated { username } | Selected { username; _ } ->
+      (match Storage.subscribe t.storage ~username mailbox with
+       | Ok () ->
+         send_response flow (Ok { tag = Some tag; code = None; text = "SUBSCRIBE completed" });
+         state
+       | Error e ->
+         send_response flow (No {
+           tag = Some tag;
+           code = None;
+           text = Imap_storage.error_to_string e
+         });
+         state)
     | _ ->
       send_response flow (Bad {
         tag = Some tag;
@@ -911,11 +997,20 @@ module Make
       });
       state
 
-  let handle_unsubscribe flow tag _mailbox state =
+  let handle_unsubscribe t flow tag mailbox state =
     match state with
-    | Authenticated _ | Selected _ ->
-      send_response flow (Ok { tag = Some tag; code = None; text = "UNSUBSCRIBE completed" });
-      state
+    | Authenticated { username } | Selected { username; _ } ->
+      (match Storage.unsubscribe t.storage ~username mailbox with
+       | Ok () ->
+         send_response flow (Ok { tag = Some tag; code = None; text = "UNSUBSCRIBE completed" });
+         state
+       | Error e ->
+         send_response flow (No {
+           tag = Some tag;
+           code = None;
+           text = Imap_storage.error_to_string e
+         });
+         state)
     | _ ->
       send_response flow (Bad {
         tag = Some tag;
@@ -1047,6 +1142,7 @@ module Make
     | Select mailbox -> (handle_select t flow tag mailbox ~readonly:false state, Continue)
     | Examine mailbox -> (handle_select t flow tag mailbox ~readonly:true state, Continue)
     | List { reference; pattern } -> (handle_list t flow tag ~reference ~pattern state, Continue)
+    | Lsub { reference; pattern } -> (handle_lsub t flow tag ~reference ~pattern state, Continue)
     | Status { mailbox; items } -> (handle_status t flow tag mailbox ~items state, Continue)
     | Fetch { sequence; items } -> (handle_fetch t flow tag ~sequence ~items state, Continue)
     | Store { sequence; silent; action; flags } -> (handle_store t flow tag ~sequence ~silent ~action ~flags state, Continue)
@@ -1062,8 +1158,8 @@ module Make
     | Append { mailbox; flags; date; message } -> (handle_append t flow tag ~mailbox ~flags ~date ~message state, Continue)
     | Namespace -> (handle_namespace flow tag state, Continue)
     | Enable caps -> (handle_enable flow tag ~capabilities:caps state, Continue)
-    | Subscribe mailbox -> (handle_subscribe flow tag mailbox state, Continue)
-    | Unsubscribe mailbox -> (handle_unsubscribe flow tag mailbox state, Continue)
+    | Subscribe mailbox -> (handle_subscribe t flow tag mailbox state, Continue)
+    | Unsubscribe mailbox -> (handle_unsubscribe t flow tag mailbox state, Continue)
     | Idle -> (handle_idle t flow tag read_line_fn ~clock state, Continue)
     | Uid uid_cmd -> (handle_uid_command t flow tag ~read_line_fn uid_cmd state, Continue)
     | Starttls ->
@@ -1080,9 +1176,59 @@ module Make
        | Some _ ->
          (* Signal to connection handler to upgrade *)
          (state, Upgrade_tls tag))
-    | Authenticate _ ->
-      send_response flow (No { tag = Some tag; code = None; text = "Use LOGIN instead" });
-      (state, Continue)
+    | Authenticate { mechanism; initial_response } ->
+      (* Only support PLAIN mechanism *)
+      if String.uppercase_ascii mechanism <> "PLAIN" then begin
+        send_response flow (No { tag = Some tag; code = None; text = "Unsupported authentication mechanism" });
+        (state, Continue)
+      end else if state <> Not_authenticated then begin
+        send_response flow (Bad { tag = Some tag; code = None; text = "Already authenticated" });
+        (state, Continue)
+      end else begin
+        (* Get the SASL response - either from initial_response or via continuation *)
+        let sasl_response = match initial_response with
+          | Some resp -> Some resp
+          | None ->
+            (* Send continuation and read response *)
+            send_response flow (Continuation None);
+            read_line_fn ()
+        in
+        match sasl_response with
+        | None ->
+          send_response flow (No { tag = Some tag; code = Some Code_authenticationfailed; text = "AUTHENTICATE failed" });
+          (state, Continue)
+        | Some resp ->
+          (* Decode base64 and parse SASL PLAIN format: [authzid]\0authcid\0password *)
+          let resp = String.trim resp in
+          (match Base64.decode resp with
+           | Error _ ->
+             send_response flow (No { tag = Some tag; code = Some Code_authenticationfailed; text = "Invalid base64 encoding" });
+             (state, Continue)
+           | Ok decoded ->
+             (* Split by NUL bytes - SASL PLAIN format: [authzid]\0authcid\0password *)
+             let parts = String.split_on_char '\x00' decoded in
+             let credentials = match parts with
+               | [_authzid; authcid; password] when authcid <> "" -> Some (authcid, password)
+               | [authcid; password] when authcid <> "" -> Some (authcid, password)
+               | _ -> None
+             in
+             match credentials with
+             | Some (username, password) ->
+               if not (Imap_types.is_safe_username username) then begin
+                 send_response flow (No { tag = Some tag; code = Some Code_authenticationfailed; text = "AUTHENTICATE failed" });
+                 (state, Continue)
+               end else if Auth.authenticate t.auth ~username ~password then begin
+                 let caps = all_capabilities t ~tls_active in
+                 send_response flow (Ok { tag = Some tag; code = Some (Code_capability caps); text = "AUTHENTICATE completed" });
+                 (Authenticated { username }, Continue)
+               end else begin
+                 send_response flow (No { tag = Some tag; code = Some Code_authenticationfailed; text = "AUTHENTICATE failed" });
+                 (state, Continue)
+               end
+             | None ->
+               send_response flow (No { tag = Some tag; code = Some Code_authenticationfailed; text = "Invalid SASL PLAIN format" });
+               (state, Continue))
+      end
 
   (* Handle UID prefixed commands *)
   and handle_uid_command t flow tag ~read_line_fn:_ uid_cmd state =

@@ -182,6 +182,37 @@ module type STORAGE = sig
     (uid list, error) result
   (** Search messages.
       See {{:https://datatracker.ietf.org/doc/html/rfc9051#section-6.4.4}RFC 9051 Section 6.4.4}. *)
+
+  (** {2 Subscription Operations} *)
+
+  val subscribe :
+    t ->
+    username:string ->
+    mailbox_name ->
+    (unit, error) result
+  (** Subscribe to a mailbox.
+      See {{:https://datatracker.ietf.org/doc/html/rfc9051#section-6.3.7}RFC 9051 Section 6.3.7}. *)
+
+  val unsubscribe :
+    t ->
+    username:string ->
+    mailbox_name ->
+    (unit, error) result
+  (** Unsubscribe from a mailbox.
+      See {{:https://datatracker.ietf.org/doc/html/rfc9051#section-6.3.8}RFC 9051 Section 6.3.8}. *)
+
+  val is_subscribed :
+    t ->
+    username:string ->
+    mailbox_name ->
+    bool
+  (** Check if a mailbox is subscribed. *)
+
+  val list_subscribed :
+    t ->
+    username:string ->
+    mailbox_name list
+  (** List all subscribed mailboxes for a user. *)
 end
 
 (** {1 In-Memory Storage}

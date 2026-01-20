@@ -31,5 +31,6 @@
   (tls-eio (>= 0.15))
   (tls (>= 0.15))
   (faraday (>= 0.8))
+  (base64 (>= 3.5))
   (cmdliner (>= 1.2))
   (alcotest (and (>= 1.7) :with-test))))

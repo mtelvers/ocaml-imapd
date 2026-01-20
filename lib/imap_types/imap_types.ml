@@ -347,6 +347,7 @@ type command =
   | Subscribe of mailbox_name
   | Unsubscribe of mailbox_name
   | List of { reference : string; pattern : string }
+  | Lsub of { reference : string; pattern : string }
   | Namespace
   | Status of { mailbox : mailbox_name; items : status_item list }
   | Append of { mailbox : mailbox_name; flags : flag list; date : string option; message : string }

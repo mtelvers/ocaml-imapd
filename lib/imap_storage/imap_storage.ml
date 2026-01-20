@@ -52,6 +52,10 @@ module type STORAGE = sig
   val copy : t -> username:string -> src_mailbox:mailbox_name -> sequence:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
   val move : t -> username:string -> src_mailbox:mailbox_name -> sequence:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
   val search : t -> username:string -> mailbox:mailbox_name -> criteria:search_key -> (uid list, error) result
+  val subscribe : t -> username:string -> mailbox_name -> (unit, error) result
+  val unsubscribe : t -> username:string -> mailbox_name -> (unit, error) result
+  val is_subscribed : t -> username:string -> mailbox_name -> bool
+  val list_subscribed : t -> username:string -> mailbox_name list
 end
 
 (* ===== In-Memory Storage ===== *)
@@ -412,6 +416,85 @@ module Memory_storage = struct
          src_mb.messages <- List.mapi (fun i (m : message) -> { m with seq = i + 1 }) src_mb.messages);
       Result.Ok uids
 
+  (* Helper: case-insensitive substring search *)
+  let contains_substring ~needle haystack =
+    let needle = String.lowercase_ascii needle in
+    let haystack = String.lowercase_ascii haystack in
+    let rec search i =
+      if i + String.length needle > String.length haystack then false
+      else if String.sub haystack i (String.length needle) = needle then true
+      else search (i + 1)
+    in
+    search 0
+
+  (* Helper: get header value from raw headers *)
+  let get_header_value headers name =
+    let name = String.lowercase_ascii name ^ ":" in
+    let lines = String.split_on_char '\n' headers in
+    let rec find = function
+      | [] -> None
+      | line :: rest ->
+        let line = String.trim line in
+        if String.length line >= String.length name &&
+           String.lowercase_ascii (String.sub line 0 (String.length name)) = name then
+          Some (String.trim (String.sub line (String.length name) (String.length line - String.length name)))
+        else
+          find rest
+    in
+    find lines
+
+  (* Helper: parse IMAP date format "dd-Mon-yyyy" to (year, month, day) *)
+  let parse_imap_date s =
+    let months = [("jan", 1); ("feb", 2); ("mar", 3); ("apr", 4); ("may", 5); ("jun", 6);
+                  ("jul", 7); ("aug", 8); ("sep", 9); ("oct", 10); ("nov", 11); ("dec", 12)] in
+    let s = String.trim s in
+    let parts = String.split_on_char '-' s in
+    match parts with
+    | [day_s; mon_s; year_s] ->
+      (try
+        let day = int_of_string (String.trim day_s) in
+        let mon = String.lowercase_ascii (String.trim mon_s) in
+        let year = int_of_string (String.trim year_s) in
+        (match List.assoc_opt mon months with
+         | Some month -> Some (year, month, day)
+         | None -> None)
+      with _ -> None)
+    | _ -> None
+
+  (* Helper: parse RFC 5322 / internal date to (year, month, day) *)
+  let parse_date_string s =
+    let months = [("jan", 1); ("feb", 2); ("mar", 3); ("apr", 4); ("may", 5); ("jun", 6);
+                  ("jul", 7); ("aug", 8); ("sep", 9); ("oct", 10); ("nov", 11); ("dec", 12)] in
+    let s = String.lowercase_ascii (String.trim s) in
+    (* Remove quotes if present *)
+    let s = if String.length s >= 2 && s.[0] = '"' then
+              String.sub s 1 (String.length s - 2) else s in
+    (* Split on spaces and other delimiters *)
+    let words = String.split_on_char ' ' s |> List.concat_map (String.split_on_char ',') in
+    let words = List.map String.trim words |> List.filter (fun w -> w <> "") in
+    let rec find_date = function
+      | [] -> None
+      | day_s :: rest ->
+        (match int_of_string_opt day_s with
+         | Some day when day >= 1 && day <= 31 ->
+           (match rest with
+            | mon_s :: year_s :: _ ->
+              (match List.assoc_opt mon_s months, int_of_string_opt year_s with
+               | Some month, Some year when year > 1900 -> Some (year, month, day)
+               | _ -> find_date rest)
+            | _ -> find_date rest)
+         | _ -> find_date rest)
+    in
+    find_date words
+
+  (* Helper: compare dates (year, month, day) *)
+  let compare_dates (y1, m1, d1) (y2, m2, d2) =
+    let c = compare y1 y2 in
+    if c <> 0 then c
+    else let c = compare m1 m2 in
+    if c <> 0 then c
+    else compare d1 d2
+
   let search t ~username ~mailbox ~criteria =
     let mailbox = normalize_mailbox_name mailbox in
     let user = get_user t ~username in
@@ -429,8 +512,9 @@ module Memory_storage = struct
         | Search_flagged -> List.mem (System Flagged) m.flags
         | Search_unflagged -> not (List.mem (System Flagged) m.flags)
         | Search_draft -> List.mem (System Draft) m.flags
-        | Search_new -> not (List.mem (System Seen) m.flags)  (* Simplified *)
-        | Search_old -> List.mem (System Seen) m.flags  (* Simplified *)
+        | Search_undraft -> not (List.mem (System Draft) m.flags)
+        | Search_new -> not (List.mem (System Seen) m.flags)  (* Recent and not seen *)
+        | Search_old -> List.mem (System Seen) m.flags  (* Not recent = seen *)
         | Search_not k -> not (matches m k)
         | Search_or (k1, k2) -> matches m k1 || matches m k2
         | Search_and ks -> List.for_all (matches m) ks
@@ -444,12 +528,145 @@ module Memory_storage = struct
             | From n -> Int32.to_int m.uid >= n
             | All -> true
           ) seqs
-        | _ -> true  (* TODO: Implement remaining search keys *)
+        | Search_sequence_set seqs ->
+          List.exists (fun range ->
+            match range with
+            | Single n -> m.seq = n
+            | Range (a, b) -> m.seq >= a && m.seq <= b
+            | From n -> m.seq >= n
+            | All -> true
+          ) seqs
+        | Search_body s ->
+          (match m.raw_body with
+           | Some body -> contains_substring ~needle:s body
+           | None -> false)
+        | Search_text s ->
+          (* Search both headers and body *)
+          let in_headers = match m.raw_headers with
+            | Some h -> contains_substring ~needle:s h
+            | None -> false
+          in
+          let in_body = match m.raw_body with
+            | Some b -> contains_substring ~needle:s b
+            | None -> false
+          in
+          in_headers || in_body
+        | Search_subject s ->
+          (match m.raw_headers with
+           | Some h -> (match get_header_value h "subject" with
+               | Some subj -> contains_substring ~needle:s subj
+               | None -> false)
+           | None -> false)
+        | Search_from s ->
+          (match m.raw_headers with
+           | Some h -> (match get_header_value h "from" with
+               | Some from -> contains_substring ~needle:s from
+               | None -> false)
+           | None -> false)
+        | Search_to s ->
+          (match m.raw_headers with
+           | Some h -> (match get_header_value h "to" with
+               | Some to_ -> contains_substring ~needle:s to_
+               | None -> false)
+           | None -> false)
+        | Search_cc s ->
+          (match m.raw_headers with
+           | Some h -> (match get_header_value h "cc" with
+               | Some cc -> contains_substring ~needle:s cc
+               | None -> false)
+           | None -> false)
+        | Search_bcc s ->
+          (match m.raw_headers with
+           | Some h -> (match get_header_value h "bcc" with
+               | Some bcc -> contains_substring ~needle:s bcc
+               | None -> false)
+           | None -> false)
+        | Search_header (name, value) ->
+          (match m.raw_headers with
+           | Some h -> (match get_header_value h name with
+               | Some v -> contains_substring ~needle:value v
+               | None -> false)
+           | None -> false)
+        | Search_keyword kw ->
+          List.exists (function Keyword k -> String.lowercase_ascii k = String.lowercase_ascii kw | _ -> false) m.flags
+        | Search_unkeyword kw ->
+          not (List.exists (function Keyword k -> String.lowercase_ascii k = String.lowercase_ascii kw | _ -> false) m.flags)
+        (* Date searches on internal date *)
+        | Search_before date_str ->
+          (match parse_imap_date date_str, parse_date_string m.internal_date with
+           | Some search_date, Some msg_date -> compare_dates msg_date search_date < 0
+           | _ -> true)  (* If can't parse, match *)
+        | Search_since date_str ->
+          (match parse_imap_date date_str, parse_date_string m.internal_date with
+           | Some search_date, Some msg_date -> compare_dates msg_date search_date >= 0
+           | _ -> true)
+        | Search_on date_str ->
+          (match parse_imap_date date_str, parse_date_string m.internal_date with
+           | Some search_date, Some msg_date -> compare_dates msg_date search_date = 0
+           | _ -> true)
+        (* Date searches on sent date (from Date header) *)
+        | Search_sentbefore date_str ->
+          (match m.raw_headers with
+           | Some h ->
+             (match get_header_value h "date" with
+              | Some date_hdr ->
+                (match parse_imap_date date_str, parse_date_string date_hdr with
+                 | Some search_date, Some msg_date -> compare_dates msg_date search_date < 0
+                 | _ -> true)
+              | None -> true)
+           | None -> true)
+        | Search_sentsince date_str ->
+          (match m.raw_headers with
+           | Some h ->
+             (match get_header_value h "date" with
+              | Some date_hdr ->
+                (match parse_imap_date date_str, parse_date_string date_hdr with
+                 | Some search_date, Some msg_date -> compare_dates msg_date search_date >= 0
+                 | _ -> true)
+              | None -> true)
+           | None -> true)
+        | Search_senton date_str ->
+          (match m.raw_headers with
+           | Some h ->
+             (match get_header_value h "date" with
+              | Some date_hdr ->
+                (match parse_imap_date date_str, parse_date_string date_hdr with
+                 | Some search_date, Some msg_date -> compare_dates msg_date search_date = 0
+                 | _ -> true)
+              | None -> true)
+           | None -> true)
       in
       let results = List.filter_map (fun (m : message) ->
         if matches m criteria then Some m.uid else None
       ) mb.messages in
       Result.Ok results
+
+  (* Normalize mailbox name for subscription comparison *)
+  let normalize_sub_name name =
+    if String.uppercase_ascii name = "INBOX" then "INBOX"
+    else name
+
+  let subscribe t ~username mailbox =
+    let user = get_user t ~username in
+    let mailbox = normalize_sub_name mailbox in
+    if not (List.mem mailbox user.subscriptions) then
+      user.subscriptions <- mailbox :: user.subscriptions;
+    Result.Ok ()
+
+  let unsubscribe t ~username mailbox =
+    let user = get_user t ~username in
+    let mailbox = normalize_sub_name mailbox in
+    user.subscriptions <- List.filter (fun m -> m <> mailbox) user.subscriptions;
+    Result.Ok ()
+
+  let is_subscribed t ~username mailbox =
+    let user = get_user t ~username in
+    let mailbox = normalize_sub_name mailbox in
+    List.mem mailbox user.subscriptions
+
+  let list_subscribed t ~username =
+    let user = get_user t ~username in
+    user.subscriptions
 end
 
 (* ===== Maildir Storage ===== *)
@@ -1170,6 +1387,100 @@ module Maildir_storage = struct
       ) messages;
       Result.Ok new_uids
 
+  (* Helper: case-insensitive substring search *)
+  let contains_substring ~needle haystack =
+    let needle = String.lowercase_ascii needle in
+    let haystack = String.lowercase_ascii haystack in
+    let rec search i =
+      if i + String.length needle > String.length haystack then false
+      else if String.sub haystack i (String.length needle) = needle then true
+      else search (i + 1)
+    in
+    search 0
+
+  (* Helper: get header value from raw headers *)
+  let get_header_value headers name =
+    let name = String.lowercase_ascii name ^ ":" in
+    let lines = String.split_on_char '\n' headers in
+    let rec find = function
+      | [] -> None
+      | line :: rest ->
+        let line = String.trim line in
+        if String.length line >= String.length name &&
+           String.lowercase_ascii (String.sub line 0 (String.length name)) = name then
+          Some (String.trim (String.sub line (String.length name) (String.length line - String.length name)))
+        else
+          find rest
+    in
+    find lines
+
+  (* Helper: split message into headers and body *)
+  let split_headers_body content =
+    (* Look for blank line (CRLF CRLF or LF LF) *)
+    let rec find_blank i =
+      if i >= String.length content - 1 then (content, "")
+      else if content.[i] = '\r' && i + 3 < String.length content &&
+              content.[i+1] = '\n' && content.[i+2] = '\r' && content.[i+3] = '\n' then
+        (String.sub content 0 i, String.sub content (i+4) (String.length content - i - 4))
+      else if content.[i] = '\n' && i + 1 < String.length content && content.[i+1] = '\n' then
+        (String.sub content 0 i, String.sub content (i+2) (String.length content - i - 2))
+      else
+        find_blank (i + 1)
+    in
+    find_blank 0
+
+  (* Helper: parse IMAP date format "dd-Mon-yyyy" to (year, month, day) *)
+  let parse_imap_date s =
+    let months = [("jan", 1); ("feb", 2); ("mar", 3); ("apr", 4); ("may", 5); ("jun", 6);
+                  ("jul", 7); ("aug", 8); ("sep", 9); ("oct", 10); ("nov", 11); ("dec", 12)] in
+    let s = String.trim s in
+    let parts = String.split_on_char '-' s in
+    match parts with
+    | [day_s; mon_s; year_s] ->
+      (try
+        let day = int_of_string (String.trim day_s) in
+        let mon = String.lowercase_ascii (String.trim mon_s) in
+        let year = int_of_string (String.trim year_s) in
+        (match List.assoc_opt mon months with
+         | Some month -> Some (year, month, day)
+         | None -> None)
+      with _ -> None)
+    | _ -> None
+
+  (* Helper: parse RFC 5322 / internal date to (year, month, day) *)
+  let parse_date_string s =
+    let months = [("jan", 1); ("feb", 2); ("mar", 3); ("apr", 4); ("may", 5); ("jun", 6);
+                  ("jul", 7); ("aug", 8); ("sep", 9); ("oct", 10); ("nov", 11); ("dec", 12)] in
+    let s = String.lowercase_ascii (String.trim s) in
+    (* Remove quotes if present *)
+    let s = if String.length s >= 2 && s.[0] = '"' then
+              String.sub s 1 (String.length s - 2) else s in
+    (* Split on spaces and other delimiters *)
+    let words = String.split_on_char ' ' s |> List.concat_map (String.split_on_char ',') in
+    let words = List.map String.trim words |> List.filter (fun w -> w <> "") in
+    let rec find_date = function
+      | [] -> None
+      | day_s :: rest ->
+        (match int_of_string_opt day_s with
+         | Some day when day >= 1 && day <= 31 ->
+           (match rest with
+            | mon_s :: year_s :: _ ->
+              (match List.assoc_opt mon_s months, int_of_string_opt year_s with
+               | Some month, Some year when year > 1900 -> Some (year, month, day)
+               | _ -> find_date rest)
+            | _ -> find_date rest)
+         | _ -> find_date rest)
+    in
+    find_date words
+
+  (* Helper: compare dates (year, month, day) *)
+  let compare_dates (y1, m1, d1) (y2, m2, d2) =
+    let c = compare y1 y2 in
+    if c <> 0 then c
+    else let c = compare m1 m2 in
+    if c <> 0 then c
+    else compare d1 d2
+
   let search t ~username ~mailbox ~criteria =
     let mailbox = normalize_mailbox_name mailbox in
     let path = mailbox_path t ~username ~mailbox in
@@ -1178,6 +1489,16 @@ module Maildir_storage = struct
     else begin
       let messages = list_messages path in
       let map = load_uid_map path in
+      (* Cache for file content to avoid reading same file multiple times *)
+      let content_cache = Hashtbl.create 16 in
+      let get_content filepath =
+        match Hashtbl.find_opt content_cache filepath with
+        | Some c -> c
+        | None ->
+          let c = read_message_file filepath in
+          Hashtbl.add content_cache filepath c;
+          c
+      in
       let rec matches (filepath, filename, in_new) = function
         | Search_all -> true
         | Search_seen ->
@@ -1207,6 +1528,11 @@ module Maildir_storage = struct
         | Search_draft ->
           let _, flags = parse_filename filename in
           List.mem (System Draft) flags
+        | Search_undraft ->
+          let _, flags = parse_filename filename in
+          not (List.mem (System Draft) flags)
+        | Search_new -> in_new
+        | Search_old -> not in_new
         | Search_not k -> not (matches (filepath, filename, in_new) k)
         | Search_or (k1, k2) ->
           matches (filepath, filename, in_new) k1 || matches (filepath, filename, in_new) k2
@@ -1230,7 +1556,121 @@ module Maildir_storage = struct
             | From n -> Int32.to_int uid >= n
             | All -> true
           ) seqs
-        | _ -> true  (* Simplified: other criteria match all *)
+        | Search_body s ->
+          (match get_content filepath with
+           | Some content ->
+             let _, body = split_headers_body content in
+             contains_substring ~needle:s body
+           | None -> false)
+        | Search_text s ->
+          (match get_content filepath with
+           | Some content -> contains_substring ~needle:s content
+           | None -> false)
+        | Search_subject s ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "subject" with
+              | Some subj -> contains_substring ~needle:s subj
+              | None -> false)
+           | None -> false)
+        | Search_from s ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "from" with
+              | Some from -> contains_substring ~needle:s from
+              | None -> false)
+           | None -> false)
+        | Search_to s ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "to" with
+              | Some to_ -> contains_substring ~needle:s to_
+              | None -> false)
+           | None -> false)
+        | Search_cc s ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "cc" with
+              | Some cc -> contains_substring ~needle:s cc
+              | None -> false)
+           | None -> false)
+        | Search_bcc s ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "bcc" with
+              | Some bcc -> contains_substring ~needle:s bcc
+              | None -> false)
+           | None -> false)
+        | Search_header (name, value) ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers name with
+              | Some v -> contains_substring ~needle:value v
+              | None -> false)
+           | None -> false)
+        | Search_keyword kw ->
+          let _, flags = parse_filename filename in
+          List.exists (function Keyword k -> String.lowercase_ascii k = String.lowercase_ascii kw | _ -> false) flags
+        | Search_unkeyword kw ->
+          let _, flags = parse_filename filename in
+          not (List.exists (function Keyword k -> String.lowercase_ascii k = String.lowercase_ascii kw | _ -> false) flags)
+        | Search_sequence_set _ -> true  (* Would need sequence number tracking *)
+        (* Date searches on internal date (file modification time) *)
+        | Search_before date_str ->
+          let internal_date = get_internal_date filepath in
+          (match parse_imap_date date_str, parse_date_string internal_date with
+           | Some search_date, Some msg_date -> compare_dates msg_date search_date < 0
+           | _ -> true)
+        | Search_since date_str ->
+          let internal_date = get_internal_date filepath in
+          (match parse_imap_date date_str, parse_date_string internal_date with
+           | Some search_date, Some msg_date -> compare_dates msg_date search_date >= 0
+           | _ -> true)
+        | Search_on date_str ->
+          let internal_date = get_internal_date filepath in
+          (match parse_imap_date date_str, parse_date_string internal_date with
+           | Some search_date, Some msg_date -> compare_dates msg_date search_date = 0
+           | _ -> true)
+        (* Date searches on sent date (from Date header) *)
+        | Search_sentbefore date_str ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "date" with
+              | Some date_hdr ->
+                (match parse_imap_date date_str, parse_date_string date_hdr with
+                 | Some search_date, Some msg_date -> compare_dates msg_date search_date < 0
+                 | _ -> true)
+              | None -> true)
+           | None -> true)
+        | Search_sentsince date_str ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "date" with
+              | Some date_hdr ->
+                (match parse_imap_date date_str, parse_date_string date_hdr with
+                 | Some search_date, Some msg_date -> compare_dates msg_date search_date >= 0
+                 | _ -> true)
+              | None -> true)
+           | None -> true)
+        | Search_senton date_str ->
+          (match get_content filepath with
+           | Some content ->
+             let headers, _ = split_headers_body content in
+             (match get_header_value headers "date" with
+              | Some date_hdr ->
+                (match parse_imap_date date_str, parse_date_string date_hdr with
+                 | Some search_date, Some msg_date -> compare_dates msg_date search_date = 0
+                 | _ -> true)
+              | None -> true)
+           | None -> true)
       in
       let results = List.filter_map (fun (filepath, filename, in_new) ->
         if matches (filepath, filename, in_new) criteria then
@@ -1240,4 +1680,71 @@ module Maildir_storage = struct
       save_uid_map path map;
       Result.Ok results
     end
+
+  (* Subscription file path for user *)
+  let subscriptions_path t ~username =
+    let base = user_path t ~username in
+    Filename.concat base ".subscriptions"
+
+  (* Load subscriptions from file *)
+  let load_subscriptions t ~username =
+    let path = subscriptions_path t ~username in
+    if Sys.file_exists path then begin
+      try
+        let ic = open_in path in
+        let rec read_lines acc =
+          match input_line ic with
+          | line ->
+            let line = String.trim line in
+            if line <> "" then read_lines (line :: acc)
+            else read_lines acc
+          | exception End_of_file ->
+            close_in ic;
+            List.rev acc
+        in
+        read_lines []
+      with _ -> []
+    end else []
+
+  (* Save subscriptions to file *)
+  let save_subscriptions t ~username subs =
+    let path = subscriptions_path t ~username in
+    try
+      (* Ensure parent directory exists *)
+      let dir = Filename.dirname path in
+      if not (Sys.file_exists dir) then
+        Unix.mkdir dir 0o700;
+      let oc = open_out path in
+      List.iter (fun name -> output_string oc (name ^ "\n")) subs;
+      close_out oc
+    with _ -> ()
+
+  (* Normalize mailbox name for subscription comparison *)
+  let normalize_sub_name name =
+    if String.uppercase_ascii name = "INBOX" then "INBOX"
+    else name
+
+  let subscribe t ~username mailbox =
+    let mailbox = normalize_sub_name mailbox in
+    let subs = load_subscriptions t ~username in
+    if not (List.mem mailbox subs) then begin
+      let subs = mailbox :: subs in
+      save_subscriptions t ~username subs
+    end;
+    Result.Ok ()
+
+  let unsubscribe t ~username mailbox =
+    let mailbox = normalize_sub_name mailbox in
+    let subs = load_subscriptions t ~username in
+    let subs = List.filter (fun m -> m <> mailbox) subs in
+    save_subscriptions t ~username subs;
+    Result.Ok ()
+
+  let is_subscribed t ~username mailbox =
+    let mailbox = normalize_sub_name mailbox in
+    let subs = load_subscriptions t ~username in
+    List.mem mailbox subs
+
+  let list_subscribed t ~username =
+    load_subscriptions t ~username
 end
