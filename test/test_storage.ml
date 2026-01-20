@@ -307,6 +307,265 @@ let test_maildir_flag_persistence () =
     Alcotest.(check bool) "has Flagged" true (List.mem (System Flagged) msg.flags)
   | Error _ -> Alcotest.fail "fetch failed"
 
+(* ===== Subscription Tests - Memory Storage ===== *)
+
+let test_memory_subscribe () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+
+  (* Subscribe to a mailbox *)
+  let result = Memory_storage.subscribe storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "subscribe success" true (Result.is_ok result);
+
+  (* Check it's subscribed *)
+  let is_sub = Memory_storage.is_subscribed storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "is subscribed" true is_sub
+
+let test_memory_unsubscribe () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+
+  (* Subscribe then unsubscribe *)
+  ignore (Memory_storage.subscribe storage ~username:"test" "INBOX");
+  let result = Memory_storage.unsubscribe storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "unsubscribe success" true (Result.is_ok result);
+
+  (* Check it's no longer subscribed *)
+  let is_sub = Memory_storage.is_subscribed storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "not subscribed" false is_sub
+
+let test_memory_list_subscribed () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Sent");
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Drafts");
+
+  (* Subscribe to multiple mailboxes *)
+  ignore (Memory_storage.subscribe storage ~username:"test" "INBOX");
+  ignore (Memory_storage.subscribe storage ~username:"test" "Sent");
+
+  let subs = Memory_storage.list_subscribed storage ~username:"test" in
+  Alcotest.(check int) "two subscriptions" 2 (List.length subs);
+  Alcotest.(check bool) "has INBOX" true (List.mem "INBOX" subs);
+  Alcotest.(check bool) "has Sent" true (List.mem "Sent" subs);
+  Alcotest.(check bool) "no Drafts" false (List.mem "Drafts" subs)
+
+(* ===== Subscription Tests - Maildir Storage ===== *)
+
+let test_maildir_subscribe () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+
+  (* Subscribe to a mailbox *)
+  let result = Maildir_storage.subscribe storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "subscribe success" true (Result.is_ok result);
+
+  (* Check it's subscribed *)
+  let is_sub = Maildir_storage.is_subscribed storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "is subscribed" true is_sub
+
+let test_maildir_unsubscribe () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+
+  (* Subscribe then unsubscribe *)
+  ignore (Maildir_storage.subscribe storage ~username:"test" "INBOX");
+  let result = Maildir_storage.unsubscribe storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "unsubscribe success" true (Result.is_ok result);
+
+  (* Check it's no longer subscribed *)
+  let is_sub = Maildir_storage.is_subscribed storage ~username:"test" "INBOX" in
+  Alcotest.(check bool) "not subscribed" false is_sub
+
+let test_maildir_list_subscribed () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.create_mailbox storage ~username:"test" "Sent");
+  ignore (Maildir_storage.create_mailbox storage ~username:"test" "Drafts");
+
+  (* Subscribe to multiple mailboxes *)
+  ignore (Maildir_storage.subscribe storage ~username:"test" "INBOX");
+  ignore (Maildir_storage.subscribe storage ~username:"test" "Sent");
+
+  let subs = Maildir_storage.list_subscribed storage ~username:"test" in
+  Alcotest.(check int) "two subscriptions" 2 (List.length subs);
+  Alcotest.(check bool) "has INBOX" true (List.mem "INBOX" subs);
+  Alcotest.(check bool) "has Sent" true (List.mem "Sent" subs);
+  Alcotest.(check bool) "no Drafts" false (List.mem "Drafts" subs)
+
+let test_maildir_subscription_persistence () =
+  with_temp_dir @@ fun tmp_path ->
+  (* First storage instance - subscribe *)
+  let storage1 = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage1 ~username:"test";
+  ignore (Maildir_storage.subscribe storage1 ~username:"test" "INBOX");
+  ignore (Maildir_storage.subscribe storage1 ~username:"test" "Sent");
+
+  (* Second storage instance - verify persistence *)
+  let storage2 = Maildir_storage.create_with_path ~base_path:tmp_path in
+  let subs = Maildir_storage.list_subscribed storage2 ~username:"test" in
+  Alcotest.(check int) "subscriptions persisted" 2 (List.length subs)
+
+(* ===== Search Tests - Memory Storage ===== *)
+
+let test_memory_search_all () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 1");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 2");
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:Search_all with
+  | Ok uids -> Alcotest.(check int) "found all" 2 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_seen () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Seen] ~date:None ~message:"Seen message");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Unseen message");
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:Search_seen with
+  | Ok uids -> Alcotest.(check int) "found seen" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_text () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Hello World\r\n\r\nBody text");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Goodbye\r\n\r\nOther content");
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:(Search_text "Hello") with
+  | Ok uids -> Alcotest.(check int) "found text" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_subject () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Important Meeting\r\n\r\nBody");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Casual chat\r\n\r\nBody");
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:(Search_subject "Important") with
+  | Ok uids -> Alcotest.(check int) "found subject" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_from () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"From: alice@example.com\r\nSubject: Test\r\n\r\nBody");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"From: bob@example.com\r\nSubject: Test\r\n\r\nBody");
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:(Search_from "alice") with
+  | Ok uids -> Alcotest.(check int) "found from" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_larger () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Short");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:(String.make 1000 'x'));
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:(Search_larger 100L) with
+  | Ok uids -> Alcotest.(check int) "found larger" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_and () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Seen] ~date:None ~message:"Subject: Hello\r\n\r\nBody");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Hello\r\n\r\nBody");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Seen] ~date:None ~message:"Subject: Goodbye\r\n\r\nBody");
+
+  let criteria = Search_and [Search_seen; Search_subject "Hello"] in
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria with
+  | Ok uids -> Alcotest.(check int) "found and" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_or () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Flagged] ~date:None ~message:"Subject: Test\r\n\r\nBody");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Deleted] ~date:None ~message:"Subject: Test\r\n\r\nBody");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Test\r\n\r\nBody");
+
+  let criteria = Search_or (Search_flagged, Search_deleted) in
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria with
+  | Ok uids -> Alcotest.(check int) "found or" 2 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_memory_search_not () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Seen] ~date:None ~message:"Seen");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Unseen");
+
+  match Memory_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:(Search_not Search_seen) with
+  | Ok uids -> Alcotest.(check int) "found not seen" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+(* ===== Search Tests - Maildir Storage ===== *)
+
+let test_maildir_search_all () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 1");
+  ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 2");
+
+  match Maildir_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:Search_all with
+  | Ok uids -> Alcotest.(check int) "found all" 2 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_maildir_search_seen () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[System Seen] ~date:None ~message:"Seen message");
+  ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Unseen message");
+
+  match Maildir_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:Search_seen with
+  | Ok uids -> Alcotest.(check int) "found seen" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
+let test_maildir_search_subject () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Important Meeting\r\n\r\nBody");
+  ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Subject: Casual chat\r\n\r\nBody");
+
+  match Maildir_storage.search storage ~username:"test" ~mailbox:"INBOX" ~criteria:(Search_subject "Important") with
+  | Ok uids -> Alcotest.(check int) "found subject" 1 (List.length uids)
+  | Error _ -> Alcotest.fail "search failed"
+
 let () =
   let open Alcotest in
   run "imap_storage" [
@@ -320,6 +579,22 @@ let () =
       test_case "store_flags" `Quick test_memory_store_flags;
       test_case "expunge" `Quick test_memory_expunge;
     ];
+    "memory_subscriptions", [
+      test_case "subscribe" `Quick test_memory_subscribe;
+      test_case "unsubscribe" `Quick test_memory_unsubscribe;
+      test_case "list_subscribed" `Quick test_memory_list_subscribed;
+    ];
+    "memory_search", [
+      test_case "search_all" `Quick test_memory_search_all;
+      test_case "search_seen" `Quick test_memory_search_seen;
+      test_case "search_text" `Quick test_memory_search_text;
+      test_case "search_subject" `Quick test_memory_search_subject;
+      test_case "search_from" `Quick test_memory_search_from;
+      test_case "search_larger" `Quick test_memory_search_larger;
+      test_case "search_and" `Quick test_memory_search_and;
+      test_case "search_or" `Quick test_memory_search_or;
+      test_case "search_not" `Quick test_memory_search_not;
+    ];
     "maildir_storage", [
       test_case "create_mailbox" `Quick test_maildir_create_mailbox;
       test_case "delete_mailbox" `Quick test_maildir_delete_mailbox;
@@ -330,5 +605,16 @@ let () =
       test_case "store_flags" `Quick test_maildir_store_flags;
       test_case "expunge" `Quick test_maildir_expunge;
       test_case "flag_persistence" `Quick test_maildir_flag_persistence;
+    ];
+    "maildir_subscriptions", [
+      test_case "subscribe" `Quick test_maildir_subscribe;
+      test_case "unsubscribe" `Quick test_maildir_unsubscribe;
+      test_case "list_subscribed" `Quick test_maildir_list_subscribed;
+      test_case "subscription_persistence" `Quick test_maildir_subscription_persistence;
+    ];
+    "maildir_search", [
+      test_case "search_all" `Quick test_maildir_search_all;
+      test_case "search_seen" `Quick test_maildir_search_seen;
+      test_case "search_subject" `Quick test_maildir_search_subject;
     ];
   ]

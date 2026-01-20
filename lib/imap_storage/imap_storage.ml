@@ -350,6 +350,21 @@ module Memory_storage = struct
       (1900 + tm.Unix.tm_year)
       tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
 
+  (* Helper: split message into headers and body *)
+  let split_message_headers_body content =
+    (* Look for blank line (CRLF CRLF or LF LF) *)
+    let rec find_blank i =
+      if i >= String.length content - 1 then (content, "")
+      else if content.[i] = '\r' && i + 3 < String.length content &&
+              content.[i+1] = '\n' && content.[i+2] = '\r' && content.[i+3] = '\n' then
+        (String.sub content 0 i, String.sub content (i+4) (String.length content - i - 4))
+      else if content.[i] = '\n' && i + 1 < String.length content && content.[i+1] = '\n' then
+        (String.sub content 0 i, String.sub content (i+2) (String.length content - i - 2))
+      else
+        find_blank (i + 1)
+    in
+    find_blank 0
+
   let append t ~username ~mailbox ~flags ~date ~message =
     let mailbox = normalize_mailbox_name mailbox in
     let user = get_user t ~username in
@@ -359,6 +374,8 @@ module Memory_storage = struct
     | Some mb ->
       let uid = mb.uidnext in
       mb.uidnext <- Int32.succ mb.uidnext;
+      (* Parse headers from the raw message *)
+      let headers, body = split_message_headers_body message in
       let msg = {
         uid;
         seq = List.length mb.messages + 1;
@@ -367,8 +384,8 @@ module Memory_storage = struct
         size = Int64.of_int (String.length message);
         envelope = None;
         body_structure = None;
-        raw_headers = None;
-        raw_body = Some message;
+        raw_headers = Some headers;
+        raw_body = Some body;
       } in
       mb.messages <- mb.messages @ [msg];
       Result.Ok uid

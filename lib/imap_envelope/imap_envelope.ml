@@ -434,6 +434,9 @@ let rec extract_mime_part_from_body headers_str body section_parts =
   | [] ->
     (* No more section parts - return this part's body *)
     Some body
+  | [1] when media_type <> "multipart" ->
+    (* Section "1" for non-multipart message returns the body *)
+    Some body
   | part_num :: rest ->
     if media_type = "multipart" then begin
       match get_boundary ct_params with
@@ -491,7 +494,7 @@ let decode_quoted_printable content =
           i := !i + (if c1 = '\r' && c2 = '\n' then 3 else 2)
         end else begin
           (* Hex escape *)
-          let hex = String.make 2 c1 ^ String.make 1 c2 in
+          let hex = String.make 1 c1 ^ String.make 1 c2 in
           (try
              let code = int_of_string ("0x" ^ hex) in
              Buffer.add_char buf (Char.chr code);
@@ -546,6 +549,9 @@ let rec extract_mime_part_with_encoding_from_body headers_str body section_parts
   match section_parts with
   | [] ->
     (* No more section parts - return this part's body and encoding *)
+    Some (body, encoding)
+  | [1] when media_type <> "multipart" ->
+    (* Section "1" for non-multipart message returns the body and encoding *)
     Some (body, encoding)
   | part_num :: rest ->
     if media_type = "multipart" then begin

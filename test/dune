@@ -18,6 +18,10 @@
  (name test_server)
  (libraries imap_types imap_parser alcotest))
 
+(test
+ (name test_envelope)
+ (libraries imap_envelope alcotest))
+
 (executable
  (name test_lex)
  (libraries imap_parser))
