@@ -50,7 +50,9 @@ module type STORAGE = sig
   val expunge : t -> username:string -> mailbox:mailbox_name -> (uid list, error) result
   val append : t -> username:string -> mailbox:mailbox_name -> flags:flag list -> date:string option -> message:string -> (uid, error) result
   val copy : t -> username:string -> src_mailbox:mailbox_name -> sequence:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
+  val copy_by_uid : t -> username:string -> src_mailbox:mailbox_name -> uids:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
   val move : t -> username:string -> src_mailbox:mailbox_name -> sequence:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
+  val move_by_uid : t -> username:string -> src_mailbox:mailbox_name -> uids:sequence_set -> dst_mailbox:mailbox_name -> (uid list, error) result
   val search : t -> username:string -> mailbox:mailbox_name -> criteria:search_key -> (uid list, error) result
   val subscribe : t -> username:string -> mailbox_name -> (unit, error) result
   val unsubscribe : t -> username:string -> mailbox_name -> (unit, error) result
@@ -432,6 +434,61 @@ module Memory_storage = struct
          ) src_mb.messages;
          src_mb.messages <- List.mapi (fun i (m : message) -> { m with seq = i + 1 }) src_mb.messages);
       Result.Ok uids
+
+  let copy_by_uid t ~username ~src_mailbox ~uids ~dst_mailbox =
+    let src_mailbox = normalize_mailbox_name src_mailbox in
+    let dst_mailbox = normalize_mailbox_name dst_mailbox in
+    let user = get_user t ~username in
+    match Hashtbl.find_opt user.mailboxes src_mailbox,
+          Hashtbl.find_opt user.mailboxes dst_mailbox with
+    | None, _ -> Result.Error Mailbox_not_found
+    | _, None -> Result.Error Mailbox_not_found
+    | Some src_mb, Some dst_mb ->
+      let uid_matches uid =
+        List.exists (fun range ->
+          match range with
+          | Single n -> Int32.to_int uid = n
+          | Range (a, b) -> Int32.to_int uid >= a && Int32.to_int uid <= b
+          | From n -> Int32.to_int uid >= n
+          | All -> true
+        ) uids
+      in
+      let to_copy = List.filter (fun m -> uid_matches m.uid) src_mb.messages in
+      let new_uids = List.map (fun m ->
+        let uid = dst_mb.uidnext in
+        dst_mb.uidnext <- Int32.succ dst_mb.uidnext;
+        let new_msg = {
+          m with
+          uid;
+          seq = List.length dst_mb.messages + 1;
+        } in
+        dst_mb.messages <- dst_mb.messages @ [new_msg];
+        uid
+      ) to_copy in
+      Result.Ok new_uids
+
+  let move_by_uid t ~username ~src_mailbox ~uids ~dst_mailbox =
+    match copy_by_uid t ~username ~src_mailbox ~uids ~dst_mailbox with
+    | Result.Error e -> Result.Error e
+    | Result.Ok new_uids ->
+      (* Remove source messages *)
+      let src_mailbox = normalize_mailbox_name src_mailbox in
+      let user = get_user t ~username in
+      (match Hashtbl.find_opt user.mailboxes src_mailbox with
+       | None -> ()
+       | Some src_mb ->
+         let uid_matches uid =
+           List.exists (fun range ->
+             match range with
+             | Single n -> Int32.to_int uid = n
+             | Range (a, b) -> Int32.to_int uid >= a && Int32.to_int uid <= b
+             | From n -> Int32.to_int uid >= n
+             | All -> true
+           ) uids
+         in
+         src_mb.messages <- List.filter (fun m -> not (uid_matches m.uid)) src_mb.messages;
+         src_mb.messages <- List.mapi (fun i (m : message) -> { m with seq = i + 1 }) src_mb.messages);
+      Result.Ok new_uids
 
   (* Helper: case-insensitive substring search *)
   let contains_substring ~needle haystack =
@@ -1400,6 +1457,86 @@ module Maildir_storage = struct
       List.iteri (fun i (filepath, _filename, _) ->
         let seq = i + 1 in
         if Memory_storage.seq_matches sequence seq max_seq then
+          (try Sys.remove filepath with _ -> ())
+      ) messages;
+      Result.Ok new_uids
+
+  let copy_by_uid t ~username ~src_mailbox ~uids ~dst_mailbox =
+    let src_mailbox = normalize_mailbox_name src_mailbox in
+    let dst_mailbox = normalize_mailbox_name dst_mailbox in
+    let src_path = mailbox_path t ~username ~mailbox:src_mailbox in
+    let dst_path = mailbox_path t ~username ~mailbox:dst_mailbox in
+    if not (Sys.file_exists src_path) then
+      Result.Error Mailbox_not_found
+    else if not (Sys.file_exists dst_path) then
+      Result.Error Mailbox_not_found
+    else begin
+      let messages = list_messages src_path in
+      let src_map = load_uid_map src_path in
+      let dst_map = load_uid_map dst_path in
+      let uid_matches uid =
+        List.exists (fun range ->
+          match range with
+          | Single n -> Int32.to_int uid = n
+          | Range (a, b) -> Int32.to_int uid >= a && Int32.to_int uid <= b
+          | From n -> Int32.to_int uid >= n
+          | All -> true
+        ) uids
+      in
+      let new_uids = ref [] in
+      List.iter (fun (filepath, filename, _) ->
+        let unique_name, flags = parse_filename filename in
+        let uid = match Hashtbl.find_opt src_map.entries unique_name with
+          | Some u -> u
+          | None -> 0l
+        in
+        if uid_matches uid then begin
+          match read_message_file filepath with
+          | Some content ->
+            let new_unique_name = generate_unique_name t in
+            let new_filename = build_filename new_unique_name flags in
+            let dest_dir = if List.mem (System Seen) flags then "cur" else "new" in
+            let dest_path = Filename.concat (Filename.concat dst_path dest_dir) new_filename in
+            let oc = open_out_bin dest_path in
+            output_string oc content;
+            close_out oc;
+            let new_uid = dst_map.next_uid in
+            dst_map.next_uid <- Int32.succ dst_map.next_uid;
+            Hashtbl.add dst_map.entries new_unique_name new_uid;
+            new_uids := new_uid :: !new_uids
+          | None -> ()
+        end
+      ) messages;
+      save_uid_map src_path src_map;
+      save_uid_map dst_path dst_map;
+      Result.Ok (List.rev !new_uids)
+    end
+
+  let move_by_uid t ~username ~src_mailbox ~uids ~dst_mailbox =
+    match copy_by_uid t ~username ~src_mailbox ~uids ~dst_mailbox with
+    | Result.Error e -> Result.Error e
+    | Result.Ok new_uids ->
+      (* Remove source messages *)
+      let src_mailbox = normalize_mailbox_name src_mailbox in
+      let src_path = mailbox_path t ~username ~mailbox:src_mailbox in
+      let messages = list_messages src_path in
+      let src_map = load_uid_map src_path in
+      let uid_matches uid =
+        List.exists (fun range ->
+          match range with
+          | Single n -> Int32.to_int uid = n
+          | Range (a, b) -> Int32.to_int uid >= a && Int32.to_int uid <= b
+          | From n -> Int32.to_int uid >= n
+          | All -> true
+        ) uids
+      in
+      List.iter (fun (filepath, filename, _) ->
+        let unique_name, _ = parse_filename filename in
+        let uid = match Hashtbl.find_opt src_map.entries unique_name with
+          | Some u -> u
+          | None -> 0l
+        in
+        if uid_matches uid then
           (try Sys.remove filepath with _ -> ())
       ) messages;
       Result.Ok new_uids

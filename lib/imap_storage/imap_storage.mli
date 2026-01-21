@@ -161,8 +161,17 @@ module type STORAGE = sig
     sequence:sequence_set ->
     dst_mailbox:mailbox_name ->
     (uid list, error) result
-  (** Copy messages.
+  (** Copy messages by sequence number.
       See {{:https://datatracker.ietf.org/doc/html/rfc9051#section-6.4.7}RFC 9051 Section 6.4.7}. *)
+
+  val copy_by_uid :
+    t ->
+    username:string ->
+    src_mailbox:mailbox_name ->
+    uids:sequence_set ->
+    dst_mailbox:mailbox_name ->
+    (uid list, error) result
+  (** Copy messages by UID. *)
 
   val move :
     t ->
@@ -171,8 +180,17 @@ module type STORAGE = sig
     sequence:sequence_set ->
     dst_mailbox:mailbox_name ->
     (uid list, error) result
-  (** Move messages.
+  (** Move messages by sequence number.
       See {{:https://datatracker.ietf.org/doc/html/rfc9051#section-6.4.8}RFC 9051 Section 6.4.8}. *)
+
+  val move_by_uid :
+    t ->
+    username:string ->
+    src_mailbox:mailbox_name ->
+    uids:sequence_set ->
+    dst_mailbox:mailbox_name ->
+    (uid list, error) result
+  (** Move messages by UID. *)
 
   val search :
     t ->

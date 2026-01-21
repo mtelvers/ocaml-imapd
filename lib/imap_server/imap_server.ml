@@ -774,7 +774,7 @@ module Make
         state
 
   (* Process COPY command *)
-  let handle_copy t flow tag ~sequence ~mailbox state =
+  let handle_copy t flow tag ~sequence ~mailbox ?(use_uid=false) state =
     (* Security: Validate destination mailbox name *)
     if not (Imap_types.is_safe_mailbox_name mailbox) then begin
       send_response flow (No { tag = Some tag; code = None; text = "Invalid mailbox name" });
@@ -782,7 +782,8 @@ module Make
     end else
     match state with
     | Selected { username; mailbox = src_mailbox; _ } ->
-      (match Storage.copy t.storage ~username ~src_mailbox ~sequence ~dst_mailbox:mailbox with
+      let copy_fn = if use_uid then Storage.copy_by_uid ~uids:sequence else Storage.copy ~sequence in
+      (match copy_fn t.storage ~username ~src_mailbox ~dst_mailbox:mailbox with
        | Result.Error Imap_storage.Mailbox_not_found ->
          send_response flow (No {
            tag = Some tag;
@@ -813,7 +814,7 @@ module Make
       state
 
   (* Process MOVE command - RFC 6851 *)
-  let handle_move t flow tag ~sequence ~mailbox state =
+  let handle_move t flow tag ~sequence ~mailbox ?(use_uid=false) state =
     (* Security: Validate destination mailbox name *)
     if not (Imap_types.is_safe_mailbox_name mailbox) then begin
       send_response flow (No { tag = Some tag; code = None; text = "Invalid mailbox name" });
@@ -825,7 +826,8 @@ module Make
         send_response flow (No { tag = Some tag; code = None; text = "Mailbox is read-only" });
         state
       end else begin
-        match Storage.move t.storage ~username ~src_mailbox ~sequence ~dst_mailbox:mailbox with
+        let move_fn = if use_uid then Storage.move_by_uid ~uids:sequence else Storage.move ~sequence in
+        match move_fn t.storage ~username ~src_mailbox ~dst_mailbox:mailbox with
         | Result.Error Imap_storage.Mailbox_not_found ->
           send_response flow (No {
             tag = Some tag;
@@ -1239,9 +1241,9 @@ module Make
     | Uid_store { sequence; silent; action; flags } ->
       handle_store t flow tag ~sequence ~silent ~action ~flags ~use_uid:true state
     | Uid_copy { sequence; mailbox } ->
-      handle_copy t flow tag ~sequence ~mailbox state
+      handle_copy t flow tag ~sequence ~mailbox ~use_uid:true state
     | Uid_move { sequence; mailbox } ->
-      handle_move t flow tag ~sequence ~mailbox state
+      handle_move t flow tag ~sequence ~mailbox ~use_uid:true state
     | Uid_search { charset; criteria } ->
       handle_search t flow tag ~charset ~criteria state
     | Uid_expunge _sequence ->
