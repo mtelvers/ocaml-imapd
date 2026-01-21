@@ -409,6 +409,253 @@ let test_maildir_subscription_persistence () =
   let subs = Maildir_storage.list_subscribed storage2 ~username:"test" in
   Alcotest.(check int) "subscriptions persisted" 2 (List.length subs)
 
+(* ===== Copy/Move Tests - Memory Storage ===== *)
+
+let test_memory_copy () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 3 messages with different UIDs *)
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 1");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 2");
+  ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+    ~flags:[] ~date:None ~message:"Message 3");
+
+  (* Copy message at sequence 2 *)
+  let result = Memory_storage.copy storage ~username:"test"
+    ~src_mailbox:"INBOX" ~sequence:[Single 2] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "copied one" 1 (List.length uids);
+    (* Verify INBOX still has 3 messages *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"INBOX"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "inbox unchanged" 3 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch inbox failed");
+    (* Verify Archive has 1 message *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has copy" 1 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "copy failed"
+
+let test_memory_copy_by_uid () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 5 messages - UIDs will be 1, 2, 3, 4, 5 *)
+  for i = 1 to 5 do
+    ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Copy messages with UIDs 2, 4 (using comma-separated ranges like the bug case) *)
+  let result = Memory_storage.copy_by_uid storage ~username:"test"
+    ~src_mailbox:"INBOX" ~uids:[Single 2; Single 4] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "copied two by uid" 2 (List.length uids);
+    (* Verify Archive has 2 messages *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has copies" 2 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "copy_by_uid failed"
+
+let test_memory_copy_by_uid_range () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 10 messages - UIDs will be 1-10 *)
+  for i = 1 to 10 do
+    ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Copy messages with UIDs 3:5,8:10 (range notation like UID COPY 3:5,8:10 folder) *)
+  let result = Memory_storage.copy_by_uid storage ~username:"test"
+    ~src_mailbox:"INBOX" ~uids:[Range (3, 5); Range (8, 10)] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "copied six by uid range" 6 (List.length uids);
+    (* Verify Archive has 6 messages *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has copies" 6 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "copy_by_uid range failed"
+
+let test_memory_move () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 3 messages *)
+  for i = 1 to 3 do
+    ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Move message at sequence 2 *)
+  let result = Memory_storage.move storage ~username:"test"
+    ~src_mailbox:"INBOX" ~sequence:[Single 2] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "moved one" 1 (List.length uids);
+    (* Verify INBOX now has 2 messages *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"INBOX"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "inbox reduced" 2 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch inbox failed");
+    (* Verify Archive has 1 message *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has moved msg" 1 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "move failed"
+
+let test_memory_move_by_uid () =
+  let storage = Memory_storage.create () in
+  Memory_storage.add_test_user storage ~username:"test";
+  ignore (Memory_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 5 messages - UIDs will be 1, 2, 3, 4, 5 *)
+  for i = 1 to 5 do
+    ignore (Memory_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Move messages with UIDs 1, 3, 5 *)
+  let result = Memory_storage.move_by_uid storage ~username:"test"
+    ~src_mailbox:"INBOX" ~uids:[Single 1; Single 3; Single 5] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "moved three by uid" 3 (List.length uids);
+    (* Verify INBOX now has 2 messages (UIDs 2 and 4) *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"INBOX"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "inbox reduced" 2 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch inbox failed");
+    (* Verify Archive has 3 messages *)
+    (match Memory_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has moved msgs" 3 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "move_by_uid failed"
+
+(* ===== Copy/Move Tests - Maildir Storage ===== *)
+
+let test_maildir_copy () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 3 messages *)
+  for i = 1 to 3 do
+    ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Copy message at sequence 2 *)
+  let result = Maildir_storage.copy storage ~username:"test"
+    ~src_mailbox:"INBOX" ~sequence:[Single 2] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "copied one" 1 (List.length uids);
+    (* Verify INBOX still has 3 messages *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"INBOX"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "inbox unchanged" 3 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch inbox failed");
+    (* Verify Archive has 1 message *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has copy" 1 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "copy failed"
+
+let test_maildir_copy_by_uid () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 5 messages - UIDs will be 1-5 *)
+  for i = 1 to 5 do
+    ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Copy messages with UIDs 2, 4 *)
+  let result = Maildir_storage.copy_by_uid storage ~username:"test"
+    ~src_mailbox:"INBOX" ~uids:[Single 2; Single 4] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "copied two by uid" 2 (List.length uids);
+    (* Verify Archive has 2 messages *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has copies" 2 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "copy_by_uid failed"
+
+let test_maildir_move () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 3 messages *)
+  for i = 1 to 3 do
+    ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Move message at sequence 2 *)
+  let result = Maildir_storage.move storage ~username:"test"
+    ~src_mailbox:"INBOX" ~sequence:[Single 2] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "moved one" 1 (List.length uids);
+    (* Verify INBOX now has 2 messages *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"INBOX"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "inbox reduced" 2 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch inbox failed");
+    (* Verify Archive has 1 message *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has moved msg" 1 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "move failed"
+
+let test_maildir_move_by_uid () =
+  with_temp_dir @@ fun tmp_path ->
+  let storage = Maildir_storage.create_with_path ~base_path:tmp_path in
+  Maildir_storage.ensure_user storage ~username:"test";
+  ignore (Maildir_storage.create_mailbox storage ~username:"test" "Archive");
+  (* Add 5 messages - UIDs will be 1-5 *)
+  for i = 1 to 5 do
+    ignore (Maildir_storage.append storage ~username:"test" ~mailbox:"INBOX"
+      ~flags:[] ~date:None ~message:(Printf.sprintf "Message %d" i))
+  done;
+
+  (* Move messages with UIDs 1, 3, 5 *)
+  let result = Maildir_storage.move_by_uid storage ~username:"test"
+    ~src_mailbox:"INBOX" ~uids:[Single 1; Single 3; Single 5] ~dst_mailbox:"Archive" in
+  match result with
+  | Ok uids ->
+    Alcotest.(check int) "moved three by uid" 3 (List.length uids);
+    (* Verify INBOX now has 2 messages *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"INBOX"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "inbox reduced" 2 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch inbox failed");
+    (* Verify Archive has 3 messages *)
+    (match Maildir_storage.fetch_messages storage ~username:"test" ~mailbox:"Archive"
+       ~sequence:[All] ~items:[Fetch_flags] with
+     | Ok msgs -> Alcotest.(check int) "archive has moved msgs" 3 (List.length msgs)
+     | Error _ -> Alcotest.fail "fetch archive failed")
+  | Error _ -> Alcotest.fail "move_by_uid failed"
+
 (* ===== Search Tests - Memory Storage ===== *)
 
 let test_memory_search_all () =
@@ -616,5 +863,18 @@ let () =
       test_case "search_all" `Quick test_maildir_search_all;
       test_case "search_seen" `Quick test_maildir_search_seen;
       test_case "search_subject" `Quick test_maildir_search_subject;
+    ];
+    "memory_copy_move", [
+      test_case "copy" `Quick test_memory_copy;
+      test_case "copy_by_uid" `Quick test_memory_copy_by_uid;
+      test_case "copy_by_uid_range" `Quick test_memory_copy_by_uid_range;
+      test_case "move" `Quick test_memory_move;
+      test_case "move_by_uid" `Quick test_memory_move_by_uid;
+    ];
+    "maildir_copy_move", [
+      test_case "copy" `Quick test_maildir_copy;
+      test_case "copy_by_uid" `Quick test_maildir_copy_by_uid;
+      test_case "move" `Quick test_maildir_move;
+      test_case "move_by_uid" `Quick test_maildir_move_by_uid;
     ];
   ]
